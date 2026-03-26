@@ -1,0 +1,193 @@
+# PQC DNSSEC Kubernetes benchmark configuration
+
+versions:
+  kubernetes: "1.32.0"
+  kind: "0.27.0"
+  coredns: "1.12.2"
+  go: "1.23.11"
+  liboqs: "0.14.0-rc1"
+  dnssec_pqc_plugin: "v0.1.1"
+  dns_library: "github.com/qursa-uc3m/dns"
+
+cluster:
+  name: "pqc-dnssec-bench"
+  dns_domain: "cluster.local"
+  service_namespace: "bench"
+
+algorithms:
+  - name: "Falcon-512"
+    id: 17
+    label: "FALCON-512"
+    type: pqc
+  - name: "ML-DSA-44"
+    id: 18
+    label: "ML-DSA-44"
+    type: pqc
+  - name: "SPHINCS+-SHA2-128s-simple"
+    id: 19
+    label: "SLH-DSA-SHA2-128s"
+    type: pqc
+  - name: "MAYO-1"
+    id: 20
+    label: "MAYO-1"
+    type: pqc
+  - name: "SNOVA_24_5_4"
+    id: 21
+    label: "SNOVA"
+    type: pqc
+  - name: "Falcon-1024"
+    id: 27
+    label: "FALCON-1024"
+    type: pqc
+  - name: "ML-DSA-65"
+    id: 28
+    label: "ML-DSA-65"
+    type: pqc
+  - name: "MAYO-3"
+    id: 30
+    label: "MAYO-3"
+    type: pqc
+  - name: "ML-DSA-87"
+    id: 38
+    label: "ML-DSA-87"
+    type: pqc
+  - name: "RSASHA256"
+    id: 8
+    label: "RSA-SHA256"
+    type: classical
+  - name: "ECDSAP256SHA256"
+    id: 13
+    label: "ECDSA-P256"
+    type: classical
+  - name: "ED25519"
+    id: 15
+    label: "Ed25519"
+    type: classical
+  - name: "NONE"
+    id: 0
+    label: "Baseline"
+    type: baseline
+
+benchmark:
+  churn_rates: [0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0]
+  query_rates: [10, 50, 100, 200, 500]
+  run_duration: 60
+  warmup: 10
+  repetitions: 3
+  baseline_services: 20
+  cache_ttl: 5
+
+pilot:
+  algorithms: ["Falcon-512", "ML-DSA-44"]
+  churn_rates: [1.0, 5.0]
+  query_rates: [50, 200]
+  run_duration: 30
+  repetitions: 1
+
+smoke:
+  algorithms: ["Falcon-512", "ED25519", "NONE"]
+  churn_rates: [1.0]
+  query_rates: [50]
+  run_duration: 15
+  warmup: 5
+  baseline_services: 3
+  repetitions: 1
+
+short:
+  churn_rates: [1.0, 5.0]
+  query_rates: [50, 200]
+  run_duration: 30
+  baseline_services: 5
+  repetitions: 1
+
+validation:
+  # All algorithms, 1 rep, minimal grid: 84 runs (~25 min)
+  sig_cache_caps: [0, 10000]
+  cache_ttls: [0, 5]
+  churn_rates: [5.0]
+  query_rates: [500]
+  run_duration: 12
+  warmup: 3
+  baseline_services: 5
+  repetitions: 1
+  simulated:
+    algorithms: ["ED25519", "ML-DSA-44"]
+    sig_cache_caps: [0, 10000]
+    cache_ttls: [0, 5]
+    delays_ms: [1, 10, 50, 200]
+    stddev_ms: 0
+
+high_sigma:
+  # 12 algo × 2 sc × 3 TTL × 2 cr × 2 qr × 1 rep = 288 runs
+  sig_cache_caps: [0, 10000]
+  cache_ttls: [0, 5, 30]
+  churn_rates: [1.0, 5.0]
+  query_rates: [50, 500]
+  run_duration: 12
+  warmup: 3
+  baseline_services: 5
+  repetitions: 1
+
+sigma_sweep:
+  # Dense Σ sweep: 12 algo × 2 sc × 1 TTL × 4 cr × 7 qr × 1 rep = 672 runs
+  sig_cache_caps: [0, 10000]
+  cache_ttls: [0]
+  churn_rates: [0.5, 1.0, 2.0, 5.0]
+  query_rates: [50, 100, 200, 500, 1000, 2000, 5000]
+  run_duration: 12
+  warmup: 3
+  baseline_services: 5
+  repetitions: 1
+
+simulated_sweep:
+  # Synthetic signing delay sweep isolating signing cost from algorithm.
+  # Two transport regimes: ED25519 (UDP), ML-DSA-44 (TCP), ML-DSA-87 (TCP).
+  # 3 algos × 2 sc × 9 delays × 2 cr × 3 qr × 3 rep = 972 runs
+  algorithms: ["ED25519", "ML-DSA-44", "ML-DSA-87"]
+  sig_cache_caps: [0, 10000]
+  cache_ttls: [0]
+  simulated_delays_ms: [0.1, 0.5, 1, 5, 10, 20, 50, 100, 200]
+  simulated_stddev_ms: 0
+  churn_rates: [1.0, 5.0]
+  query_rates: [50, 200, 500]
+  run_duration: 12
+  warmup: 3
+  baseline_services: 5
+  repetitions: 3
+
+netem_sweep:
+  # Network emulation: tc-netem latency + bandwidth on Kind worker.
+  # Condition 1: Local (no delay)
+  # Condition 2: 25 ms one-way latency (~50 ms RTT)
+  # Condition 3 (bandwidth section): 500 kbps egress limit
+  network_delays_ms: [0, 25]
+  network_rates_kbps: [0]
+  sig_cache_caps: [0, 10000]
+  cache_ttls: [0]
+  churn_rates: [1.0]
+  query_rates: [200]
+  run_duration: 12
+  warmup: 3
+  baseline_services: 5
+  repetitions: 1
+
+  # Bandwidth condition: 500 kbps egress limit, no added latency
+  bandwidth:
+    network_delays_ms: [0]
+    network_rates_kbps: [500]
+    sig_cache_caps: [0]
+    cache_ttls: [0]
+    churn_rates: [1.0]
+    query_rates: [200]
+
+  # Simulated signing delay under network conditions
+  simulated:
+    algorithms: ["ED25519", "ML-DSA-44"]
+    sig_cache_caps: [0]
+    cache_ttls: [0]
+    delays_ms: [1, 10, 50, 200]
+    stddev_ms: 0
+
+results:
+  output_dir: "results"
+  # Pattern: results/<algorithm>/<churn_rate>_<query_rate>/run_<N>/

@@ -1,0 +1,5 @@
+pyyaml>=6.0
+kubernetes>=28.0
+dnspython>=2.6
+numpy>=1.26
+matplotlib>=3.8
