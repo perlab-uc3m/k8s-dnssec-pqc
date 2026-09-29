@@ -1,0 +1,152 @@
+diff --git a/dnskey.go b/dnskey.go
+index e78e9f1..b9d18e8 100644
+--- a/dnskey.go
++++ b/dnskey.go
+@@ -173,6 +173,8 @@ func (d Dnssec) getDNSKEY(state request.Request, zone string, do bool, server st
+ 	incep, expir := incepExpir(time.Now().UTC())
+ 	if sigs, err := d.sign(keys, zone, 3600, incep, expir, server); err == nil {
+ 		m.Answer = append(m.Answer, sigs...)
++	} else {
++		return signingFailure(m)
+ 	}
+ 	return m
+ }
+diff --git a/dnssec_pqc.go b/dnssec_pqc.go
+index 037ef66..04d6fc2 100644
+--- a/dnssec_pqc.go
++++ b/dnssec_pqc.go
+@@ -3,6 +3,7 @@
+ package dnssec_pqc
+ 
+ import (
++	"errors"
+ 	"math/rand"
+ 	"sync/atomic"
+ 	"time"
+@@ -47,6 +48,14 @@ func New(zones []string, keys []*DNSKEY, splitkeys bool, next plugin.Handler, c
+ 	}
+ }
+ 
++func signingFailure(req *dns.Msg) *dns.Msg {
++	req.Rcode = dns.RcodeServerFailure
++	req.Answer = nil
++	req.Ns = nil
++	req.Extra = nil
++	return req
++}
++
+ // Sign signs the message in state. it takes care of negative or nodata responses. It
+ // uses NSEC black lies for authenticated denial of existence. For delegations it
+ // will insert DS records and sign those.
+@@ -72,12 +81,14 @@ func (d Dnssec) Sign(state request.Request, now time.Time, server string) *dns.M
+ 			if sigs, err := d.nsec(state, mt, ttl, incep, expir, server); err == nil {
+ 				req.Ns = append(req.Ns, sigs...)
+ 			} else {
+-				log.Warningf("Unsigned NSEC for delegation: zone=%s err=%v", state.Zone, err)
++				log.Errorf("NSEC signing failed: zone=%s err=%v", state.Zone, err)
++				return signingFailure(req)
+ 			}
+ 		} else if sigs, err := d.sign(ds, state.Zone, ttl, incep, expir, server); err == nil {
+ 			req.Ns = append(req.Ns, sigs...)
+ 		} else {
+-			log.Warningf("Unsigned DS: zone=%s err=%v", state.Zone, err)
++			log.Errorf("DS signing failed: zone=%s err=%v", state.Zone, err)
++			return signingFailure(req)
+ 		}
+ 		return req
+ 	}
+@@ -92,10 +103,14 @@ func (d Dnssec) Sign(state request.Request, now time.Time, server string) *dns.M
+ 		if sigs, err := d.sign(req.Ns, state.Zone, ttl, incep, expir, server); err == nil {
+ 			req.Ns = append(req.Ns, sigs...)
+ 		} else {
+-			log.Warningf("Unsigned SOA: zone=%s err=%v", state.Zone, err)
++			log.Errorf("SOA signing failed: zone=%s err=%v", state.Zone, err)
++			return signingFailure(req)
+ 		}
+ 		if sigs, err := d.nsec(state, mt, ttl, incep, expir, server); err == nil {
+ 			req.Ns = append(req.Ns, sigs...)
++		} else {
++			log.Errorf("NSEC signing failed: zone=%s err=%v", state.Zone, err)
++			return signingFailure(req)
+ 		}
+ 		if len(req.Ns) > 1 { // actually added nsec and sigs, reset the rcode
+ 			req.Rcode = dns.RcodeSuccess
+@@ -112,7 +127,8 @@ func (d Dnssec) Sign(state request.Request, now time.Time, server string) *dns.M
+ 		if sigs, err := d.sign(r, state.Zone, ttl, incep, expir, server); err == nil {
+ 			req.Answer = append(req.Answer, sigs...)
+ 		} else {
+-			log.Warningf("Unsigned Answer RRset: name=%s type=%d err=%v", r[0].Header().Name, r[0].Header().Rrtype, err)
++			log.Errorf("Answer signing failed: name=%s type=%d err=%v", r[0].Header().Name, r[0].Header().Rrtype, err)
++			return signingFailure(req)
+ 		}
+ 	}
+ 	for _, r := range rrSets(req.Ns) {
+@@ -120,7 +136,8 @@ func (d Dnssec) Sign(state request.Request, now time.Time, server string) *dns.M
+ 		if sigs, err := d.sign(r, state.Zone, ttl, incep, expir, server); err == nil {
+ 			req.Ns = append(req.Ns, sigs...)
+ 		} else {
+-			log.Warningf("Unsigned Ns RRset: name=%s type=%d err=%v", r[0].Header().Name, r[0].Header().Rrtype, err)
++			log.Errorf("Authority signing failed: name=%s type=%d err=%v", r[0].Header().Name, r[0].Header().Rrtype, err)
++			return signingFailure(req)
+ 		}
+ 	}
+ 	for _, r := range rrSets(req.Extra) {
+@@ -128,7 +145,8 @@ func (d Dnssec) Sign(state request.Request, now time.Time, server string) *dns.M
+ 		if sigs, err := d.sign(r, state.Zone, ttl, incep, expir, server); err == nil {
+ 			req.Extra = append(req.Extra, sigs...)
+ 		} else {
+-			log.Warningf("Unsigned Extra RRset: name=%s type=%d err=%v", r[0].Header().Name, r[0].Header().Rrtype, err)
++			log.Errorf("Additional signing failed: name=%s type=%d err=%v", r[0].Header().Name, r[0].Header().Rrtype, err)
++			return signingFailure(req)
+ 		}
+ 	}
+ 	return req
+@@ -148,6 +166,10 @@ func (d Dnssec) sign(rrs []dns.RR, signerName string, ttl, incep, expir uint32,
+ 		start := time.Now()
+ 
+ 		var sigs []dns.RR
++		if len(d.keys) == 0 {
++			signErrors.WithLabelValues(server).Inc()
++			return sigs, errors.New("no DNSSEC signing key")
++		}
+ 		for _, k := range d.keys {
+ 			if d.splitkeys {
+ 				if len(rrs) > 0 && rrs[0].Header().Rrtype == dns.TypeDNSKEY {
+@@ -171,6 +193,10 @@ func (d Dnssec) sign(rrs []dns.RR, signerName string, ttl, incep, expir uint32,
+ 			}
+ 			sigs = append(sigs, sig)
+ 		}
++		if len(sigs) == 0 {
++			signErrors.WithLabelValues(server).Inc()
++			return sigs, errors.New("no applicable DNSSEC signing key")
++		}
+ 		// Simulated signing delay: injected inside singleflight.Do so
+ 		// concurrent waiters experience the same queueing as a real
+ 		// slow algorithm would produce.
+diff --git a/signing_failure_test.go b/signing_failure_test.go
+new file mode 100644
+index 0000000..d213522
+--- /dev/null
++++ b/signing_failure_test.go
+@@ -0,0 +1,21 @@
++package dnssec_pqc
++
++import (
++	"github.com/coredns/coredns/request"
++	"github.com/miekg/dns"
++	"testing"
++	"time"
++)
++
++func TestSigningFailureReturnsSERVFAIL(t *testing.T) {
++	d, rm1, rm2 := newDnssec(t, []string{"miek.nl."})
++	defer rm1()
++	defer rm2()
++	d.keys = nil
++	m := testMsg()
++	state := request.Request{Req: m, Zone: "miek.nl."}
++	got := d.Sign(state, time.Now().UTC(), server)
++	if got.Rcode != dns.RcodeServerFailure || len(got.Answer) != 0 || len(got.Ns) != 0 {
++		t.Fatalf("signing failure produced non-SERVFAIL or partial answer: %+v", got)
++	}
++}

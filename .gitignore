@@ -28,3 +28,7 @@ env/
 # OS
 .DS_Store
 Thumbs.db
+
+# Revision benchmark outputs
+.pytest_cache/
+release/

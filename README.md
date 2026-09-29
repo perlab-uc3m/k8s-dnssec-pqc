@@ -1,151 +1,65 @@
-# PQC DNSSEC Kubernetes Benchmark
+# PQC DNSSEC Kubernetes benchmark
 
-Benchmarking post-quantum DNSSEC signing performance under Kubernetes service churn.
+The revision benchmark runs on one Linux host. It builds a small CoreDNS image with the pinned DNSSEC plugin, creates one named Kind cluster, sends bounded DNS load, captures the received packets, verifies signed positive answers, records per-pod CPU and memory, and generates tables and figures. The original `run.py` campaign remains in this repository for comparison, with its instructions in [docs/legacy-benchmark.md](docs/legacy-benchmark.md). Use `./bench` for the revised measurements.
 
-This tool measures how cryptographic load scales across 9 post-quantum and 3 classical signature algorithms in a Kind cluster running a PQC-enabled CoreDNS.
+## Run it
 
-## Supported algorithms
-
-| ID | Name | Type | Transport |
-|----|------|------|-----------|
-| 0  | NONE (Baseline) | Unsigned | UDP |
-| 8  | RSA-SHA256 | Classical | UDP |
-| 13 | ECDSA-P256 | Classical | UDP |
-| 15 | Ed25519 | Classical | UDP |
-| 17 | FALCON-512 | PQC | UDP |
-| 18 | ML-DSA-44 | PQC | TCP |
-| 19 | SLH-DSA-SHA2-128s | PQC | TCP |
-| 20 | MAYO-1 | PQC | UDP |
-| 21 | SNOVA | PQC | UDP |
-| 27 | FALCON-1024 | PQC | TCP |
-| 28 | ML-DSA-65 | PQC | TCP |
-| 30 | MAYO-3 | PQC | UDP |
-| 38 | ML-DSA-87 | PQC | TCP |
-
-Algorithms with signed responses above 1232 bytes (the EDNS(0) UDP limit) fall back to TCP, paying an additional round-trip penalty that grows with network latency.
-
-## Prerequisites
-
-- Go 1.23+
-- Python 3.10+
-- liboqs 0.14.0-rc1 (built automatically by `scripts/build.sh`)
-- Docker, Kind, kubectl
-
-Python dependencies:
+Prerequisites are Docker access, Go 1.26.0, CMake, Ninja, a C compiler, Python 3 with `venv`, `curl`, and enough free disk for the Kind node image and build cache. The tested setup is Linux x86-64. Kind is capped at 4 GiB; this is a limit, not proof that an 8 GiB host is sufficient. The measured host had 12 logical CPUs, an Intel Core i7-1365U processor, and 14.8 GiB RAM, with other applications running.
 
 ```bash
-pip install -r requirements.txt
+./bench doctor
+./bench plan config/revision-smoke.yaml
+./bench reproduce config/revision-smoke.yaml
 ```
 
-## Repository structure
-
-```
-├── run.py                  # CLI entry point
-├── config/
-│   └── benchmark.yaml      # Campaign parameters
-├── scripts/
-│   ├── build.sh            # Build liboqs, CoreDNS, keygen, Docker image
-│   ├── setup_cluster.sh    # Create Kind cluster
-│   ├── deploy_coredns.sh   # Deploy CoreDNS with a given algorithm
-│   ├── netem.sh            # Apply tc-netem network emulation
-│   └── parse_bench.py      # Parse Go signing microbenchmark output
-├── src/
-│   ├── runner.py           # Benchmark orchestrator
-│   ├── workload.py         # Service churn generator
-│   ├── query.py            # Concurrent DNS query sender
-│   ├── collector.py        # Prometheus + container metrics scraping
-│   ├── analyzer.py         # Result loading, Sigma computation, summaries
-│   └── plotter.py          # Paper-quality figure generation
-├── k8s/
-│   └── kind-config.yaml    # Kind cluster configuration
-└── results/                # Campaign outputs (gitignored)
-```
-
-## Build
+`reproduce` bootstraps pinned Python, Kind, and kubectl tools, builds liboqs and CoreDNS with two build jobs, creates the named `pqc-dnssec-revision` Kind context, runs the cells, verifies packets, and plots results. It can take several minutes on the first build. It uses ports 30053/UDP, 30054/TCP, and 30153/TCP. It does not replace the cluster's normal DNS deployment. The smoke file has two ten-second cells. The reviewer study has twelve cells, three repetitions, 30 seconds of measurement and five seconds of warmup per run:
 
 ```bash
-scripts/build.sh
+./bench plan config/revision-study.yaml
+./bench reproduce config/revision-study.yaml
 ```
 
-This builds liboqs, CoreDNS with the [PQC DNSSEC plugin](https://github.com/qursa-uc3m/dnssec_pqc_plugin), the key generation tool, and the Docker image.
-
-## Cluster setup
+After the runs, `./bench cleanup` deletes only the named revision Kind cluster and frees its memory. A stopped campaign resumes by skipping runs with a `COMPLETE` marker. Failed and excluded attempts remain under their run directory; the next attempt gets a new number. Build jobs can be reduced with `BUILD_JOBS=1`. Build and cluster setup can be skipped after a successful first run with `--no-build --no-setup`. Regenerate tables and figures without Docker or Kubernetes using:
 
 ```bash
-scripts/setup_cluster.sh
-scripts/deploy_coredns.sh <algo_name> <algo_id> [cache_ttl] [type] [sig_cache_cap] [sim_delay] [sim_stddev]
+./bench report results/revision/revision-study
 ```
 
-The deploy script handles three algorithm types:
-- **pqc / classical**: generates DNSSEC keys and configures the `dnssec_pqc` plugin
-- **baseline**: deploys CoreDNS without DNSSEC signing (measures the unsigned latency $L_0$)
+## What is measured
 
-## Running benchmarks
+The client generates independent seeded Poisson arrivals or a two-second high phase in a 20-second burst cycle. Burst rates are normalized over the exact measurement window so the offered mean matches the control. Uniform and Zipf popularity are separate choices. It never creates unbounded in-flight tasks. Every offered query gets a record with its planned time, admission, first send, attempts, completion, status, received byte count, and DNS ID. A UDP truncation is retried on fresh TCP; separate cells use a bounded persistent TCP pool. One deadline covers all attempts. The original DNS response bytes are saved before parsing.
+
+The workload uses fixed selectorless headless Services and managed EndpointSlices. It changes one ready address at a time and logs API acknowledgment and expected address. These synthetic endpoints exercise DNS discovery only. A normal ClusterIP record would remain stable during backend pod turnover.
+
+Each run contains `config.json`, `host.json`, `queries.jsonl.gz`, `responses.bin.gz`, `updates.jsonl`, `metrics.jsonl`, `load.json`, `summary.json`, and, for signed cells, `verification.jsonl` and the public test-zone `trust_anchor.key`. Raw response frames use a 13-byte big-endian header: 8-byte query ID, 1-byte attempt index, and 4-byte length. The batch verifier checks the captured positive Answer RRsets against the pinned key after load stops. It also checks the response question, DNS ID, signature time, signer, and key. This is private-zone positive-answer verification, not a recursive public DNSSEC chain validator. Negative proofs are not validated and do not count as successful service resolutions.
+
+Per-pod Prometheus samples are taken at roughly 1 Hz with before and after snapshots. A run is excluded if it lacks full-window CPU boundaries or enough periodic samples. Average CPU cores are the difference in CoreDNS process CPU seconds divided by elapsed time. This is whole-process CPU, not crypto-only CPU. Successful-response P99 is always shown next to the offered-query count and failures; a timed-out or invalid response never disappears from the denominator. Update visibility is an upper bound from API acknowledgment to the first observed new answer under ordinary query load. Events with no such query before the next update are censored.
+
+The campaign directory contains `tables/run_summaries.csv`, `tables/outcomes.json`, `figures/latency_cpu.pdf`, `figures/latency_cpu.png`, and `report.md`. Figures are generated from complete runs only. The study does not infer server saturation from the product of query rate and signing wall time.
+
+## Build and protocol scope
+
+`scripts/build_revision.sh` checks exact dependency commits, applies the checked-in DNS verifier and plugin error-handling patches, builds only the signature algorithms needed for the study, and records the image ID and Go module build information. A signing error returns `SERVFAIL` instead of a successful unsigned answer. The old implementation and its broader algorithm list remain available through `run.py` and `scripts/build.sh`.
+
+The fork uses algorithm number 17 for Falcon-512, while IANA assigns 17 to SM2SM3. These experiments use a private zone and an out-of-band trust anchor; the Falcon results do not establish public DNSSEC interoperability. ML-DSA-44 uses number 18 in the fork and current IANA registry, but this benchmark still checks its own wire encoding and key locally.
+
+The measured cells are controlled single-host sensitivity tests. They do not represent production Kubernetes traffic, public DNS transport, energy use, or a multi-node CNI deployment.
+
+## Reproduce the paper panels and preserve the raw data
+
+The companion controls are `config/revision-cache-ttl.yaml` (response cache, freshness, and signature cache) and `config/revision-stress.yaml` (unsigned control, signing load, and matched CPU budgets across replicas). Run them one after another with `./bench reproduce CONFIG --no-build --no-setup` after the study. Campaigns keep failed attempts and report only complete repetitions.
+
+The following command recreates the TeX table and PDF figure used by the revised manuscript from all complete raw runs. It requires three complete repetitions of each of the six displayed study cells.
 
 ```bash
-python run.py --smoke             # 2 algorithms, 1 parameter point
-python run.py --pilot             # 2 algorithms, 4 points
-python run.py --short             # all algorithms, reduced grid
-python run.py --validation        # all algorithms + simulated delays, minimal grid
-python run.py --high-sigma        # TTL sweep, saturation push (288 runs)
-python run.py --sigma-sweep       # dense phase-transition grid (672 runs)
-python run.py --simulated-sweep   # synthetic signing delay sweep (972 runs)
-python run.py --netem-sweep       # network emulation (latency + bandwidth)
-python run.py                     # full campaign
+./bench export-paper results/revision/revision-study --ttl results/revision/revision-cache-ttl --stress results/revision/revision-stress --output ../paper/comnet/figures
 ```
 
-All campaigns write results to `results/<timestamp>/`. Add `--resume` to skip completed runs.
-
-## Simulated signing delay
-
-The `--simulated-sweep` campaign injects a configurable delay inside the plugin's singleflight closure to synthesize arbitrary signing costs without changing algorithms. This isolates the effect of $\bar{s}$ from other algorithm-specific properties like key size and transport mode.
-
-The delay is controlled via `simulated_delay` / `simulated_stddev` Corefile directives.
-
-## Network emulation
-
-The `--netem-sweep` campaign uses `tc-netem` on the Kind worker node to add one-way latency and bandwidth limits. This reveals how signature compactness determines performance under realistic network conditions: UDP-only algorithms (compact signatures) scale as ~1 RTT, while TCP-fallback algorithms pay ~3 RTT.
-
-## Observability
-
-The `dnssec_pqc` plugin exposes Prometheus metrics on port 30153:
-
-| Metric | Type | Description |
-|--------|------|-------------|
-| `coredns_dnssec_pqc_cache_size` | Gauge | Signature cache entries |
-| `coredns_dnssec_pqc_cache_hits_total` | Counter | Cache hits |
-| `coredns_dnssec_pqc_cache_misses_total` | Counter | Cache misses |
-| `coredns_dnssec_pqc_sign_duration_seconds` | Histogram | Per-signing wall time |
-| `coredns_dnssec_pqc_singleflight_execs_total` | Counter | Signing executions |
-| `coredns_dnssec_pqc_singleflight_coalesced_total` | Counter | Coalesced callers |
-
-These metrics are scraped automatically after each run and stored in `meta.json`.
-
-## Analysis and plots
+A portable archive can be built without copying the temporary build tree or Docker images. The adjacent JSON manifest holds a SHA256 for the tar file and for each contained file. Archive creation and verification do not need the cluster.
 
 ```bash
-python run.py --analyze                     # print summaries
-python run.py --plot                        # generate figures (PDF + PNG)
-python run.py --plot --campaign-id <dir>    # target a specific campaign
+./bench package results/revision/revision-study results/revision/revision-cache-ttl results/revision/revision-stress --output release/revision-data.tar
+./bench verify-package release/revision-data.tar release/revision-data.tar.sha256.json
 ```
 
-Auto-selects the latest campaign directory when no `--campaign-id` is given.
-
-## Signing microbenchmark
-
-Standalone Go benchmark measuring raw signing time per algorithm. Its output feeds the analytical model ($\bar{s}$, $C_v$).
-
-```bash
-cd build/dnssec_pqc_plugin/bench
-go test -bench=BenchmarkSign -benchtime=100x -count=1 -timeout=30m \
-    | tee bench_results_100.txt
-python3 scripts/parse_bench.py < bench_results_100.txt
-```
-
-## Configuration
-
-All parameters live in [`config/benchmark.yaml`](config/benchmark.yaml).
-
-## License
-
-MIT. See [LICENSE](LICENSE) for details.
+Extract the archive in a separate directory and run `./bench report PATH/TO/revision-study` to rebuild the study tables and plots offline. The published archive location is intentionally left to the release process; the scripts do not download from an unverified or assumed URL. The result archive, its manifest, and the checked-in campaign YAMLs together identify the numerical evidence for the paper. The `release/`, `build/`, and `results/` directories are ignored by Git because raw campaign data and build objects are large.

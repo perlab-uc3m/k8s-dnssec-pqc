@@ -1,0 +1,77 @@
+schema_version: 1
+campaign_id: revision-study
+context: kind-pqc-dnssec-revision
+namespace: bench
+domain: cluster.local
+repetitions: 3
+warmup_s: 5
+measurement_s: 30
+query_rate: 100
+update_rate: 1
+names: 32
+sig_cache_cap: 1024
+response_cache_ttl: 0
+record_ttl: 5
+cpu_limit: '1'
+memory_limit: 512Mi
+transport_policy: fresh_fallback
+arrival_mode: poisson
+popularity: uniform
+seed: 20260929
+cells:
+  - id: unsigned-reference
+    algorithm: Baseline
+    algorithm_id: 0
+    algorithm_type: baseline
+  - id: ed25519-reference
+    algorithm: ED25519
+    algorithm_id: 15
+    algorithm_type: classical
+  - id: mldsa44-reference
+    algorithm: ML-DSA-44
+    algorithm_id: 18
+    algorithm_type: pqc
+  - id: falcon512-reference
+    algorithm: Falcon-512
+    algorithm_id: 17
+    algorithm_type: pqc
+  - id: mldsa44-no-signature-cache
+    algorithm: ML-DSA-44
+    algorithm_id: 18
+    algorithm_type: pqc
+    sig_cache_cap: 0
+  - id: mldsa44-fast-updates
+    algorithm: ML-DSA-44
+    algorithm_id: 18
+    algorithm_type: pqc
+    update_rate: 10
+  - id: ed25519-burst
+    algorithm: ED25519
+    algorithm_id: 15
+    algorithm_type: classical
+    arrival_mode: burst_2_of_20
+  - id: mldsa44-burst
+    algorithm: ML-DSA-44
+    algorithm_id: 18
+    algorithm_type: pqc
+    arrival_mode: burst_2_of_20
+  - id: mldsa44-zipf
+    algorithm: ML-DSA-44
+    algorithm_id: 18
+    algorithm_type: pqc
+    popularity: zipf_1_1
+  - id: mldsa44-two-replicas
+    algorithm: ML-DSA-44
+    algorithm_id: 18
+    algorithm_type: pqc
+    replicas: 2
+  - id: mldsa44-reused-tcp
+    algorithm: ML-DSA-44
+    algorithm_id: 18
+    algorithm_type: pqc
+    transport_policy: reused_tcp
+  - id: falcon512-reused-tcp
+    algorithm: Falcon-512
+    algorithm_id: 17
+    algorithm_type: pqc
+    transport_policy: reused_tcp

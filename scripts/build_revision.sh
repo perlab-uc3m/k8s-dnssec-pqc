@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+set -euo pipefail
+repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+build_dir="$repo_dir/build"
+mkdir -p "$build_dir"
+clone_exact() {
+    local url="$1" branch="$2" sha="$3" dest="$4"
+    if [ ! -d "$dest/.git" ]; then
+        git clone --depth 1 --branch "$branch" "$url" "$dest"
+    fi
+    test "$(git -C "$dest" rev-parse HEAD)" = "$sha"
+}
+clone_exact https://github.com/open-quantum-safe/liboqs.git 0.14.0-rc1 \
+    a05831ac106619cdbcffb22b16efe87f70fb7770 "$build_dir/liboqs"
+clone_exact https://github.com/qursa-uc3m/dnssec_pqc_plugin.git no-cache \
+    9b852e908175d4d6c34641365c29485635eb07eb "$build_dir/dnssec_pqc_plugin"
+clone_exact https://github.com/fj-blanco/coredns.git no-cache \
+    275f84b4c16eca48f6fff3cbc517f99a6716d333 "$build_dir/coredns"
+clone_exact https://github.com/qursa-uc3m/dns.git master \
+    30d7ff0208cbb3ae3946fb6991c1e54da304dfbb "$build_dir/dns"
+if git -C "$build_dir/dns" apply --check "$repo_dir/patches/dns-pqc-verify.patch" 2>/dev/null; then
+    git -C "$build_dir/dns" apply "$repo_dir/patches/dns-pqc-verify.patch"
+elif ! git -C "$build_dir/dns" apply --reverse --check "$repo_dir/patches/dns-pqc-verify.patch" 2>/dev/null; then
+    echo "DNS fork has unexpected changes; refusing to build" >&2
+    exit 1
+fi
+if git -C "$build_dir/dnssec_pqc_plugin" apply --check "$repo_dir/patches/plugin-signing-failure.patch" 2>/dev/null; then
+    git -C "$build_dir/dnssec_pqc_plugin" apply "$repo_dir/patches/plugin-signing-failure.patch"
+elif ! git -C "$build_dir/dnssec_pqc_plugin" apply --reverse --check "$repo_dir/patches/plugin-signing-failure.patch" 2>/dev/null; then
+    echo "Plugin fork has unexpected changes; refusing to build" >&2
+    exit 1
+fi
+if [ ! -f "$build_dir/local/lib/liboqs.so" ]; then
+    cmake -S "$build_dir/liboqs" -B "$build_dir/liboqs/out" -G Ninja \
+        -DCMAKE_INSTALL_PREFIX="$build_dir/local" \
+        -DBUILD_SHARED_LIBS=ON -DOQS_BUILD_ONLY_LIB=ON -DOQS_DIST_BUILD=ON \
+        -DCMAKE_BUILD_TYPE=Release \
+        '-DOQS_MINIMAL_BUILD=SIG_ml_dsa_44;SIG_falcon_512;SIG_sphincs_sha2_128s_simple'
+    cmake --build "$build_dir/liboqs/out" --parallel "${BUILD_JOBS:-2}"
+    cmake --install "$build_dir/liboqs/out"
+fi
+cat > "$build_dir/local/lib/pkgconfig/liboqs-go.pc" <<'PKGCONFIG'
+Name: liboqs-go
+Description: C dependency for liboqs-go bindings
+Version: 0.14.0-rc1
+Requires: liboqs
+PKGCONFIG
+export GOTOOLCHAIN=go1.26.0
+export GOFLAGS="-p=${BUILD_JOBS:-2} -mod=mod"
+export GOMAXPROCS="${BUILD_JOBS:-2}"
+export GOMEMLIMIT="${BUILD_GO_MEMORY:-1GiB}"
+export PKG_CONFIG_PATH="$build_dir/local/lib/pkgconfig"
+export LD_LIBRARY_PATH="$build_dir/local/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+if [ ! -f "$build_dir/coredns-pqc" ]; then
+    cd "$build_dir/coredns"
+    cat > plugin.cfg <<'PLUGINS'
+root:root
+metadata:metadata
+prometheus:metrics
+errors:errors
+log:log
+cache:cache
+dnssec_pqc:github.com/qursa-uc3m/dnssec_pqc_plugin
+kubernetes:kubernetes
+forward:forward
+PLUGINS
+    go mod edit \
+        -replace "github.com/miekg/dns=$build_dir/dns" \
+        -replace "github.com/qursa-uc3m/dnssec_pqc_plugin=$build_dir/dnssec_pqc_plugin" \
+        -require "github.com/qursa-uc3m/dnssec_pqc_plugin@v0.1.1"
+    go run directives_generate.go
+    CGO_ENABLED=1 go test github.com/qursa-uc3m/dnssec_pqc_plugin -run TestSigningFailureReturnsSERVFAIL -count=1
+    CGO_ENABLED=1 go build -o "$build_dir/coredns-pqc"
+fi
+cd "$build_dir/dns"
+CGO_ENABLED=1 go test . -run TestPQCVerifyRepeatedAndTampered -count=1
+CGO_ENABLED=1 go build -o "$build_dir/verify-dns" "$repo_dir/tools/verify/main.go"
+CGO_ENABLED=1 go build -o "$build_dir/keygen-ed" "$repo_dir/tools/keygen_ed/main.go"
+cd "$build_dir/dnssec_pqc_plugin/keygen"
+CGO_ENABLED=1 go build -o "$build_dir/keygen"
+mkdir -p "$build_dir/image"
+cp "$build_dir/coredns-pqc" "$build_dir/image/coredns"
+cp -L "$build_dir/local/lib/liboqs.so.8" "$build_dir/image/liboqs.so.8"
+cat > "$build_dir/image/Dockerfile" <<'DOCKER'
+FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251
+RUN apt-get update && apt-get install -y --no-install-recommends libssl3 ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY coredns /usr/local/bin/coredns
+COPY liboqs.so.8 /usr/local/lib/liboqs.so.8
+RUN ldconfig
+ENTRYPOINT ["/usr/local/bin/coredns"]
+DOCKER
+docker build -t coredns-pqc:revision "$build_dir/image"
+go version -m "$build_dir/coredns-pqc" > "$build_dir/go-build-info.txt"
+docker image inspect coredns-pqc:revision --format '{{.Id}}' > "$build_dir/image-id.txt"
+echo "Built coredns-pqc:revision; image ID $(cat "$build_dir/image-id.txt")"

@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+"$repo_dir/scripts/bootstrap_revision.sh"
+export LD_LIBRARY_PATH="$repo_dir/build/local/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export PYTHONPATH="$repo_dir/src${PYTHONPATH:+:$PYTHONPATH}"
+exec "$repo_dir/build/venv/bin/python" -m revision.cli "$@"

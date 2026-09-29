@@ -1,0 +1,50 @@
+schema_version: 1
+campaign_id: revision-stress
+context: kind-pqc-dnssec-revision
+namespace: bench
+domain: cluster.local
+repetitions: 3
+warmup_s: 5
+measurement_s: 30
+query_rate: 300
+update_rate: 1
+names: 32
+sig_cache_cap: 0
+response_cache_ttl: 0
+record_ttl: 5
+cpu_limit: '1'
+memory_limit: 512Mi
+transport_policy: fresh_fallback
+arrival_mode: poisson
+popularity: uniform
+seed: 20261001
+cells:
+  - id: unsigned-300
+    algorithm: Baseline
+    algorithm_id: 0
+    algorithm_type: baseline
+  - id: ed25519-300
+    algorithm: ED25519
+    algorithm_id: 15
+    algorithm_type: classical
+  - id: mldsa44-200-one-core
+    algorithm: ML-DSA-44
+    algorithm_id: 18
+    algorithm_type: pqc
+    query_rate: 200
+  - id: mldsa44-300-one-core
+    algorithm: ML-DSA-44
+    algorithm_id: 18
+    algorithm_type: pqc
+  - id: mldsa44-300-two-half-cores
+    algorithm: ML-DSA-44
+    algorithm_id: 18
+    algorithm_type: pqc
+    replicas: 2
+    cpu_limit: 500m
+  - id: mldsa44-300-two-cores
+    algorithm: ML-DSA-44
+    algorithm_id: 18
+    algorithm_type: pqc
+    replicas: 2
+    cpu_limit: '1'

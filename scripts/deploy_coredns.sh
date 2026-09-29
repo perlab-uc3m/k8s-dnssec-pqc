@@ -4,8 +4,23 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$SCRIPT_DIR")"
 BUILD_DIR="${REPO_DIR}/build"
+export LD_LIBRARY_PATH="${BUILD_DIR}/local/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 K8S_DIR="${REPO_DIR}/k8s"
 KEYS_DIR="${BUILD_DIR}/keys"
+KUBECTL_BIN="${BENCH_KUBECTL:-kubectl}"
+BENCH_CONTEXT="${BENCH_CONTEXT:-}"
+kubectl() {
+    if [ -n "$BENCH_CONTEXT" ]; then
+        command "$KUBECTL_BIN" --context "$BENCH_CONTEXT" "$@"
+    else
+        command "$KUBECTL_BIN" "$@"
+    fi
+}
+KUBERNETES_TTL="${KUBERNETES_TTL:-5}"
+COREDNS_REPLICAS="${COREDNS_REPLICAS:-1}"
+COREDNS_CPU_LIMIT="${COREDNS_CPU_LIMIT:-1}"
+COREDNS_MEMORY_LIMIT="${COREDNS_MEMORY_LIMIT:-512Mi}"
+BENCH_REQUEST_LOG="${BENCH_REQUEST_LOG:-0}"
 
 ALGORITHM="${1:?Usage: deploy_coredns.sh <algorithm_name> <algorithm_id> [cache_ttl] [type] [sig_cache_cap] [sim_delay] [sim_stddev]}"
 ALGORITHM_ID="${2:?Usage: deploy_coredns.sh <algorithm_name> <algorithm_id> [cache_ttl] [type] [sig_cache_cap] [sim_delay] [sim_stddev]}"
@@ -33,7 +48,11 @@ else
 
     if [ "$ALGO_TYPE" = "classical" ]; then
         # Use BIND's dnssec-keygen for classical algorithms
-        dnssec-keygen -a "$ALGORITHM" -n ZONE "$DOMAIN" 2>/dev/null
+        if [ "$ALGORITHM" = "ED25519" ] && [ -x "${BUILD_DIR}/keygen-ed" ]; then
+            "${BUILD_DIR}/keygen-ed" -domain "$DOMAIN" -out "$KEYS_DIR"
+        else
+            dnssec-keygen -a "$ALGORITHM" -n ZONE "$DOMAIN" 2>/dev/null
+        fi
     else
         # Use PQC keygen
         "${BUILD_DIR}/keygen" -algorithm "$ALGORITHM" -number "$ALGORITHM_ID" -domain "$DOMAIN"
@@ -80,15 +99,28 @@ ${SIG_CACHE_LINE:+$SIG_CACHE_LINE
 }    }"
 fi
 
+RESPONSE_CACHE_BLOCK=""
+if [ "$CACHE_TTL" -gt 0 ]; then
+    RESPONSE_CACHE_BLOCK="    cache ${CACHE_TTL} {
+        success 9984 ${CACHE_TTL} 0
+        denial 9984 ${CACHE_TTL} 0
+    }"
+fi
+REQUEST_LOG_LINE=""
+if [ "$BENCH_REQUEST_LOG" = "1" ]; then
+    REQUEST_LOG_LINE="    log"
+fi
 COREFILE=$(cat <<EOF
 ${DOMAIN}:53 {
     kubernetes ${DOMAIN} in-addr.arpa ip6.arpa {
         pods insecure
+        ttl ${KUBERNETES_TTL}
         fallthrough in-addr.arpa ip6.arpa
     }
 ${DNSSEC_BLOCK:+${DNSSEC_BLOCK}
-}$([ "${CACHE_TTL}" -gt 0 ] 2>/dev/null && echo "    cache ${CACHE_TTL}" || true)
-    log
+}
+${RESPONSE_CACHE_BLOCK}
+${REQUEST_LOG_LINE}
     errors
     prometheus :9153
 }
@@ -158,7 +190,7 @@ metadata:
   labels:
     app: coredns-pqc
 spec:
-  replicas: 1
+  replicas: ${COREDNS_REPLICAS}
   selector:
     matchLabels:
       app: coredns-pqc
@@ -170,7 +202,7 @@ spec:
       serviceAccountName: coredns-pqc
       containers:
         - name: coredns
-          image: coredns-pqc:latest
+          image: ${COREDNS_IMAGE:-coredns-pqc:latest}
           imagePullPolicy: Never
           args: ["-conf", "/etc/coredns/Corefile"]
           ports:
@@ -182,11 +214,11 @@ spec:
               protocol: TCP
           resources:
             requests:
-              memory: "256Mi"
-              cpu: "250m"
+              memory: "128Mi"
+              cpu: "100m"
             limits:
-              memory: "1Gi"
-              cpu: "2000m"
+              memory: "${COREDNS_MEMORY_LIMIT}"
+              cpu: "${COREDNS_CPU_LIMIT}"
           volumeMounts:
             - name: config
               mountPath: /etc/coredns
