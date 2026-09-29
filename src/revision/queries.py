@@ -3,6 +3,7 @@
 All times in records are seconds from the run's monotonic anchor. The writer
 drains a bounded queue and never changes response timings.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -13,9 +14,9 @@ import socket
 import struct
 import time
 from collections import Counter
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Awaitable, Callable
 
 import dns.flags
 import dns.message
@@ -159,8 +160,11 @@ async def _one(
 ) -> QueryRecord:
     record.admitted_s = time.monotonic() - anchor
     query = dns.message.make_query(
-        record.fqdn, dns.rdatatype.A, want_dnssec=True,
-        use_edns=0, payload=1232,
+        record.fqdn,
+        dns.rdatatype.A,
+        want_dnssec=True,
+        use_edns=0,
+        payload=1232,
     )
     wire = query.to_wire()
     record.dns_id = query.id
@@ -187,11 +191,15 @@ async def _one(
                     record.sent_s = sent - anchor
                 record.raw_responses.append(response)
                 truncated = _classify(record, response, record.fqdn)
-                record.attempts.append({
-                    "transport": mode, "sent_s": sent - anchor,
-                    "received_s": time.monotonic() - anchor,
-                    "wire_bytes": len(response), "truncated": truncated,
-                })
+                record.attempts.append(
+                    {
+                        "transport": mode,
+                        "sent_s": sent - anchor,
+                        "received_s": time.monotonic() - anchor,
+                        "wire_bytes": len(response),
+                        "truncated": truncated,
+                    }
+                )
                 if not truncated:
                     break
             if record.status == "truncated":
@@ -254,8 +262,10 @@ async def run_load(
     counts: Counter[str] = Counter()
     files = None
     if output is not None:
-        files = (gzip.open(output / "queries.jsonl.gz", "wt"),
-                 gzip.open(output / "responses.bin.gz", "wb"))
+        files = (
+            gzip.open(output / "queries.jsonl.gz", "wt"),
+            gzip.open(output / "responses.bin.gz", "wb"),
+        )
 
     async def writer() -> None:
         while True:
@@ -277,10 +287,18 @@ async def run_load(
 
     async def submit(record: QueryRecord) -> None:
         try:
-            await queue.put(await _one(
-                record, anchor, host, udp_port, tcp_port, policy,
-                timeout_s, pool,
-            ))
+            await queue.put(
+                await _one(
+                    record,
+                    anchor,
+                    host,
+                    udp_port,
+                    tcp_port,
+                    policy,
+                    timeout_s,
+                    pool,
+                )
+            )
         finally:
             running.discard(asyncio.current_task())
 

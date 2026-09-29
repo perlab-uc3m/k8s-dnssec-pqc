@@ -1,4 +1,5 @@
 """Offline per-run summaries and figures. Never select a favored repetition."""
+
 from __future__ import annotations
 
 import csv
@@ -60,8 +61,14 @@ def _visibility(run_dir: Path, observations: dict[str, list[dict]], require_veri
     post_ack_observations = 0
     censored = 0
     for index, event in enumerate(acknowledged):
-        next_ack = next((other["acknowledged_s"] for other in acknowledged[index + 1:]
-                         if other["name"] == event["name"]), float("inf"))
+        next_ack = next(
+            (
+                other["acknowledged_s"]
+                for other in acknowledged[index + 1 :]
+                if other["name"] == event["name"]
+            ),
+            float("inf"),
+        )
         found = False
         for row in observations.get(event["name"], []):
             sent = row.get("sent_s")
@@ -73,7 +80,9 @@ def _visibility(run_dir: Path, observations: dict[str, list[dict]], require_veri
                 post_ack_observations += 1
             if event["expected_a"] in row.get("answer_a", []):
                 if not found:
-                    visible_delays.append(max(0.0, row["completed_s"] - event["acknowledged_s"]) * 1000)
+                    visible_delays.append(
+                        max(0.0, row["completed_s"] - event["acknowledged_s"]) * 1000
+                    )
                     found = True
             elif row.get("answer_a"):
                 stale += 1
@@ -165,30 +174,50 @@ def summarize_run(run_dir: Path) -> dict:
     for sample in samples:
         by_pod.setdefault(sample["uid"], []).append(sample)
     cpu_seconds = [_metric_delta(s, "process_cpu_seconds_total") for s in by_pod.values()]
-    cpu_total = sum(x[0] for x in cpu_seconds) if cpu_seconds and all(x is not None for x in cpu_seconds) else None
+    cpu_total = (
+        sum(x[0] for x in cpu_seconds)
+        if cpu_seconds and all(x is not None for x in cpu_seconds)
+        else None
+    )
     cpu_interval = statistics.mean(x[1] for x in cpu_seconds) if cpu_total is not None else None
     sign_total = [
-        _metric_delta(s, "coredns_dnssec_pqc_singleflight_execs_total")
-        for s in by_pod.values()
+        _metric_delta(s, "coredns_dnssec_pqc_singleflight_execs_total") for s in by_pod.values()
     ]
-    sign_interval = statistics.mean(x[1] for x in sign_total) if sign_total and all(x is not None for x in sign_total) else None
+    sign_interval = (
+        statistics.mean(x[1] for x in sign_total)
+        if sign_total and all(x is not None for x in sign_total)
+        else None
+    )
     sign_total = sum(x[0] for x in sign_total) if sign_interval is not None else None
+
     def counter(prefix: str) -> float | None:
         deltas = [_metric_delta(pod_samples, prefix) for pod_samples in by_pod.values()]
         return sum(x[0] for x in deltas) if deltas and all(x is not None for x in deltas) else None
+
     hits = counter("coredns_dnssec_pqc_cache_hits_total")
     misses = counter("coredns_dnssec_pqc_cache_misses_total")
     coalesced = counter("coredns_dnssec_pqc_singleflight_coalesced_total")
     sign_wall_sum = counter("coredns_dnssec_pqc_sign_duration_seconds_sum")
     sign_wall_count = counter("coredns_dnssec_pqc_sign_duration_seconds_count")
-    mean_sign_wall_s = sign_wall_sum / sign_wall_count if sign_wall_sum is not None and sign_wall_count and sign_wall_count > 0 else None
+    mean_sign_wall_s = (
+        sign_wall_sum / sign_wall_count
+        if sign_wall_sum is not None and sign_wall_count and sign_wall_count > 0
+        else None
+    )
     predicted_coalescence = None
-    if config.get("signature_cache_capacity") == 0 and config.get("response_cache_ttl") == 0 and mean_sign_wall_s is not None:
+    if (
+        config.get("signature_cache_capacity") == 0
+        and config.get("response_cache_ttl") == 0
+        and mean_sign_wall_s is not None
+    ):
         total_calls = sum(signing_keys.values())
         if total_calls:
             predicted_coalescence = sum(
-                (calls / total_calls) * ((calls / load["duration_s"] * mean_sign_wall_s) /
-                                       (1 + calls / load["duration_s"] * mean_sign_wall_s))
+                (calls / total_calls)
+                * (
+                    (calls / load["duration_s"] * mean_sign_wall_s)
+                    / (1 + calls / load["duration_s"] * mean_sign_wall_s)
+                )
                 for calls in signing_keys.values()
             )
     entries = 0.0
@@ -196,8 +225,11 @@ def summarize_run(run_dir: Path) -> dict:
     for pod_samples in by_pod.values():
         end = next((x for x in reversed(pod_samples) if x["phase"] == "measurement_end"), None)
         if end is not None:
-            values = [v for k, v in end.get("series", {}).items()
-                      if k.startswith("coredns_dnssec_pqc_cache_entries{")]
+            values = [
+                v
+                for k, v in end.get("series", {}).items()
+                if k.startswith("coredns_dnssec_pqc_cache_entries{")
+            ]
             if values:
                 entries += sum(values)
                 entries_seen = True
@@ -212,8 +244,8 @@ def summarize_run(run_dir: Path) -> dict:
         for row in cg_rows:
             cg_pods.setdefault(row["uid"], {})[row["phase"]] = row
         if len(cg_pods) == len(by_pod) and all(
-            "cgroup" in phases.get("measurement_start", {}) and
-            "cgroup" in phases.get("measurement_end", {})
+            "cgroup" in phases.get("measurement_start", {})
+            and "cgroup" in phases.get("measurement_end", {})
             for phases in cg_pods.values()
         ):
             periods = throttled = usec = 0
@@ -241,8 +273,12 @@ def summarize_run(run_dir: Path) -> dict:
     accepted_within_window = verified_within_window if verification_rows is not None else None
     rss_peak = None
     if samples:
-        rss_values = [v for sample in samples for k, v in sample.get("series", {}).items()
-                      if k == "process_resident_memory_bytes"]
+        rss_values = [
+            v
+            for sample in samples
+            for k, v in sample.get("series", {}).items()
+            if k == "process_resident_memory_bytes"
+        ]
         if rss_values:
             rss_peak = max(rss_values)
     return {
@@ -264,7 +300,9 @@ def summarize_run(run_dir: Path) -> dict:
         "offered_qps": len(ids) / duration,
         "positive_unverified_qps": positive / duration,
         "verified_qps": verified_count / duration if verification_rows is not None else None,
-        "verified_within_window_qps": accepted_within_window / duration if accepted_within_window is not None else None,
+        "verified_within_window_qps": accepted_within_window / duration
+        if accepted_within_window is not None
+        else None,
         "fallback_count": fallback_count,
         "fallback_fraction": fallback_count / len(ids) if ids else None,
         "final_wire_p50_bytes": _percentile(final_wire_bytes, 0.5),
@@ -283,10 +321,14 @@ def summarize_run(run_dir: Path) -> dict:
         "signs_per_s": sign_total / sign_interval if sign_total is not None else None,
         "signature_cache_hits": hits,
         "signature_cache_misses": misses,
-        "signature_cache_hit_fraction": hits / (hits + misses) if hits is not None and misses is not None and hits + misses > 0 else None,
+        "signature_cache_hit_fraction": hits / (hits + misses)
+        if hits is not None and misses is not None and hits + misses > 0
+        else None,
         "signature_cache_entries_end": entries if entries_seen else None,
         "singleflight_coalesced": coalesced,
-        "coalescence_observed": coalesced / (coalesced + sign_total) if coalesced is not None and sign_total is not None and coalesced + sign_total > 0 else None,
+        "coalescence_observed": coalesced / (coalesced + sign_total)
+        if coalesced is not None and sign_total is not None and coalesced + sign_total > 0
+        else None,
         "coalescence_predicted_independent": predicted_coalescence,
         "sign_wall_mean_ms": mean_sign_wall_s * 1000 if mean_sign_wall_s is not None else None,
         "dns_transactions": dns_transactions,
@@ -294,18 +336,23 @@ def summarize_run(run_dir: Path) -> dict:
         "metrics_pods": len(by_pod),
         "frames": len(frame_ids),
         "statuses": dict(statuses),
-        "validation": "private_zone_signature_checked" if verification_rows is not None else "cryptographic_verification_pending",
+        "validation": "private_zone_signature_checked"
+        if verification_rows is not None
+        else "cryptographic_verification_pending",
     }
 
 
+def _median_field(rows: list[dict], key: str) -> float | None:
+    values = [row[key] for row in rows if row.get(key) is not None]
+    return statistics.median(values) if values else None
+
+
 def report(campaign: Path) -> list[dict]:
-    run_dirs = sorted(p.parent for p in campaign.glob(
-        "runs/*/rep-*/attempt-*/COMPLETE"
-    ))
+    run_dirs = sorted(p.parent for p in campaign.glob("runs/*/rep-*/attempt-*/COMPLETE"))
     if not run_dirs:
         raise ValueError(f"No complete runs under {campaign}")
     summaries = [summarize_run(p) for p in run_dirs]
-    for run_dir, summary in zip(run_dirs, summaries):
+    for run_dir, summary in zip(run_dirs, summaries, strict=True):
         (run_dir / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     tables = campaign / "tables"
     figures = campaign / "figures"
@@ -325,81 +372,40 @@ def report(campaign: Path) -> list[dict]:
         by_cell.setdefault(row["cell_id"], []).append(row)
     cell_rows = []
     for cell_id, runs in sorted(by_cell.items()):
-        def med(key: str):
-            values = [row[key] for row in runs if row.get(key) is not None]
-            return statistics.median(values) if values else None
-        cell_rows.append({
-            "cell_id": cell_id, "repetitions_complete": len(runs),
-            "offered_qps_median": med("offered_qps"),
-            "dispatch_p99_ms_median": med("dispatch_p99_ms"),
-            "client_rejected_total": sum(row["client_rejected"] for row in runs),
-            "verified_fraction_median": statistics.median(
-                [row["verified_positive"] / row["offered"] for row in runs]
-            ) if all(row["verified_positive"] is not None for row in runs) else None,
-            "p99_ms_median": med("p99_ms"),
-            "wire_p99_ms_median": med("wire_p99_ms"),
-            "p99_ms_min": min((row["p99_ms"] for row in runs if row["p99_ms"] is not None), default=None),
-            "p99_ms_max": max((row["p99_ms"] for row in runs if row["p99_ms"] is not None), default=None),
-            "cpu_cores_median": med("cpu_cores"),
-            "fallback_fraction_median": med("fallback_fraction"),
-            "signs_per_s_median": med("signs_per_s"),
-            "visibility_upper_p50_ms_median": med("visibility_upper_p50_ms"),
-            "stale_post_ack_fraction_median": med("stale_post_ack_fraction"),
-        })
+        cell_rows.append(
+            {
+                "cell_id": cell_id,
+                "repetitions_complete": len(runs),
+                "offered_qps_median": _median_field(runs, "offered_qps"),
+                "dispatch_p99_ms_median": _median_field(runs, "dispatch_p99_ms"),
+                "client_rejected_total": sum(row["client_rejected"] for row in runs),
+                "verified_fraction_median": statistics.median(
+                    [row["verified_positive"] / row["offered"] for row in runs]
+                )
+                if all(row["verified_positive"] is not None for row in runs)
+                else None,
+                "p99_ms_median": _median_field(runs, "p99_ms"),
+                "wire_p99_ms_median": _median_field(runs, "wire_p99_ms"),
+                "p99_ms_min": min(
+                    (row["p99_ms"] for row in runs if row["p99_ms"] is not None), default=None
+                ),
+                "p99_ms_max": max(
+                    (row["p99_ms"] for row in runs if row["p99_ms"] is not None), default=None
+                ),
+                "cpu_cores_median": _median_field(runs, "cpu_cores"),
+                "fallback_fraction_median": _median_field(runs, "fallback_fraction"),
+                "signs_per_s_median": _median_field(runs, "signs_per_s"),
+                "visibility_upper_p50_ms_median": _median_field(runs, "visibility_upper_p50_ms"),
+                "stale_post_ack_fraction_median": _median_field(runs, "stale_post_ack_fraction"),
+            }
+        )
     with (tables / "cell_summaries.csv").open("w", newline="") as file:
         writer = csv.DictWriter(file, fieldnames=list(cell_rows[0]))
         writer.writeheader()
         writer.writerows(cell_rows)
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
+    from revision.figures import plot_campaign
 
-    labels = [f'{r["cell_id"]}\nrep {r["repetition"]}' for r in summaries]
-    xs = range(len(summaries))
-    fig, axes = plt.subplots(2, 1, figsize=(max(8, len(summaries)*0.6), 7), sharex=True)
-    axes[0].scatter(xs, [r["p99_ms"] for r in summaries], label="P99 of positive responses")
-    axes[0].set_ylabel("Latency (ms)")
-    axes[0].legend()
-    axes[1].scatter(xs, [r["cpu_cores"] for r in summaries], label="CoreDNS CPU cores")
-    axes[1].set_ylabel("CPU cores")
-    axes[1].legend()
-    axes[1].set_xticks(list(xs), labels, rotation=70, ha="right")
-    fig.tight_layout()
-    fig.savefig(figures / "latency_cpu.pdf")
-    fig.savefig(figures / "latency_cpu.png", dpi=150)
-    plt.close(fig)
-    selected = [
-        ("unsigned-reference", "Unsigned"),
-        ("ed25519-reference", "Ed25519"),
-        ("falcon512-reference", "Falcon-512"),
-        ("mldsa44-reference", "ML-DSA-44"),
-        ("mldsa44-no-signature-cache", "ML-DSA-44\nno sig. cache"),
-        ("mldsa44-fast-updates", "ML-DSA-44\n10 updates/s"),
-    ]
-    selected = [(key, label) for key, label in selected if key in by_cell]
-    if selected:
-        fig, axes = plt.subplots(2, 1, figsize=(8.5, 5.4), sharex=True)
-        for x, (key, label) in enumerate(selected):
-            runs = sorted(by_cell[key], key=lambda row: row["repetition"])
-            for offset, row in enumerate(runs):
-                dx = (offset - (len(runs)-1)/2) * 0.075
-                for ax, field in ((axes[0], "p99_ms"), (axes[1], "cpu_cores")):
-                    if row[field] is not None:
-                        ax.scatter(x + dx, row[field], s=24, color="#174a70", alpha=0.78)
-            for ax, field in ((axes[0], "p99_ms"), (axes[1], "cpu_cores")):
-                values = [row[field] for row in runs if row[field] is not None]
-                if values:
-                    ax.plot(x, statistics.median(values), marker="_", markersize=17,
-                            markeredgewidth=2, color="#b33d32")
-        axes[0].set_ylabel("P99 of successful answers (ms)")
-        axes[1].set_ylabel("CoreDNS process CPU (cores)")
-        axes[1].set_xticks(range(len(selected)), [label for _, label in selected])
-        for ax in axes:
-            ax.grid(axis="y", alpha=0.2)
-        fig.tight_layout()
-        fig.savefig(figures / "revision_contrasts.pdf")
-        fig.savefig(figures / "revision_contrasts.png", dpi=180)
-        plt.close(fig)
+    plot_campaign(summaries, by_cell, figures)
     lines = [
         "# Offline campaign report",
         "",
@@ -411,11 +417,11 @@ def report(campaign: Path) -> list[dict]:
         "|---|---:|---:|---:|---:|---:|---:|",
     ]
     for row in summaries:
-        p99 = f'{row["p99_ms"]:.2f}' if row["p99_ms"] is not None else "n/a"
-        cpu = f'{row["cpu_cores"]:.3f}' if row["cpu_cores"] is not None else "n/a"
+        p99 = f"{row['p99_ms']:.2f}" if row["p99_ms"] is not None else "n/a"
+        cpu = f"{row['cpu_cores']:.3f}" if row["cpu_cores"] is not None else "n/a"
         lines.append(
-            f'| {row["cell_id"]} | {row["repetition"]} | {row["offered"]} | '
-            f'{row["verified_positive"] if row["verified_positive"] is not None else "n/a"} | {row["failure_or_unknown"]} | {p99} | {cpu} |'
+            f"| {row['cell_id']} | {row['repetition']} | {row['offered']} | "
+            f"{row['verified_positive'] if row['verified_positive'] is not None else 'n/a'} | {row['failure_or_unknown']} | {p99} | {cpu} |"
         )
     (campaign / "report.md").write_text("\n".join(lines) + "\n")
     return summaries

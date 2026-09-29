@@ -49,7 +49,7 @@ The measured cells are controlled single-host sensitivity tests. They do not rep
 
 The companion controls are `config/revision-cache-ttl.yaml` (response cache, freshness, and signature cache) and `config/revision-stress.yaml` (unsigned control, signing load, and matched CPU budgets across replicas). Run them one after another with `./bench reproduce CONFIG --no-build --no-setup` after the study. Campaigns keep failed attempts and report only complete repetitions.
 
-The following command recreates the TeX table and PDF figure used by the revised manuscript from all complete raw runs. It requires three complete repetitions of each of the six displayed study cells.
+The following command recreates the TeX table and PDF figures used by the revised manuscript from all complete raw runs. It requires three complete repetitions of each of the six displayed study cells.
 
 ```bash
 ./bench export-paper results/revision/revision-study --ttl results/revision/revision-cache-ttl --stress results/revision/revision-stress --output ../paper/comnet/figures
@@ -63,3 +63,15 @@ A portable archive can be built without copying the temporary build tree or Dock
 ```
 
 Extract the archive in a separate directory and run `./bench report PATH/TO/revision-study` to rebuild the study tables and plots offline. The published archive location is intentionally left to the release process; the scripts do not download from an unverified or assumed URL. The result archive, its manifest, and the checked-in campaign YAMLs together identify the numerical evidence for the paper. The `release/`, `build/`, and `results/` directories are ignored by Git because raw campaign data and build objects are large.
+
+## Source checks
+
+The revision runner and offline analysis live in `src/revision/`. Plotting is isolated in `figures.py`; the CLI imports it only when producing a report, so benchmark load generation does not load Matplotlib. The archived legacy runner remains available under `run.py`. To check the revision source before changing or sharing it:
+
+```bash
+./bench doctor
+build/venv/bin/python -m pip install -r config/revision-dev.requirements.txt
+./scripts/check_revision.sh
+```
+
+The check runs Ruff lint and format verification, the Python regression tests, Go formatting verification, and shell syntax checks. Figure exports use the original blue and green bar palette and show all three runs as open circles. The figures are regenerated from complete runs without selecting a favorable repetition.
