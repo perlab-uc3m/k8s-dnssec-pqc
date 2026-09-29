@@ -1,10 +1,10 @@
 # PQC DNSSEC Kubernetes benchmark
 
-The revision benchmark runs on one Linux host. It builds a small CoreDNS image with the pinned DNSSEC plugin, creates one named Kind cluster, sends bounded DNS load, captures the received packets, verifies signed positive answers, records per-pod CPU and memory, and generates tables and figures. The original `run.py` campaign remains in this repository for comparison, with its instructions in [docs/legacy-benchmark.md](docs/legacy-benchmark.md). Use `./bench` for the revised measurements.
+The revision benchmark runs on one Linux host. It builds a small CoreDNS image with the pinned DNSSEC plugin, creates one named Kind cluster, sends bounded DNS load, saves the received DNS messages, verifies signed positive answers, records per-pod CPU and memory, and generates tables and figures. The original `run.py` campaign remains in this repository for comparison, with its instructions in [docs/legacy-benchmark.md](docs/legacy-benchmark.md). Use `./bench` for the revised measurements.
 
 ## Run it
 
-Prerequisites are Docker access, Go 1.26.0, CMake, Ninja, a C compiler, Python 3 with `venv`, `curl`, and enough free disk for the Kind node image and build cache. The tested setup is Linux x86-64. Kind is capped at 4 GiB; this is a limit, not proof that an 8 GiB host is sufficient. The measured host had 12 logical CPUs, an Intel Core i7-1365U processor, and 14.8 GiB RAM, with other applications running.
+Prerequisites are Docker access, Go 1.26.0, CMake, Ninja, a C compiler, Python 3.14 with `venv`, `curl`, and enough free disk for the Kind node image and build cache. The tested setup is Linux x86-64. Kind is capped at 4 GiB; this is a limit, not proof that an 8 GiB host is sufficient. The measured host had 12 logical CPUs, an Intel Core i7-1365U processor, and 14.8 GiB RAM, with other applications running.
 
 ```bash
 ./bench doctor
@@ -12,7 +12,7 @@ Prerequisites are Docker access, Go 1.26.0, CMake, Ninja, a C compiler, Python 3
 ./bench reproduce config/revision-smoke.yaml
 ```
 
-`reproduce` bootstraps pinned Python, Kind, and kubectl tools, builds liboqs and CoreDNS with two build jobs, creates the named `pqc-dnssec-revision` Kind context, runs the cells, verifies packets, and plots results. It can take several minutes on the first build. It uses ports 30053/UDP, 30054/TCP, and 30153/TCP. It does not replace the cluster's normal DNS deployment. The smoke file has two ten-second cells. The reviewer study has twelve cells, three repetitions, 30 seconds of measurement and five seconds of warmup per run:
+`reproduce` bootstraps pinned Python, Kind, and kubectl tools, builds liboqs and CoreDNS with two build jobs, creates the named `pqc-dnssec-revision` Kind context, runs the cells, verifies signed answers, and plots results. It can take several minutes on the first build. It uses ports 30053/UDP, 30054/TCP, and 30153/TCP. It does not replace the cluster's normal DNS deployment. The smoke file has two ten-second cells. The reviewer study has twelve cells, three repetitions, 30 seconds of measurement and five seconds of warmup per run:
 
 ```bash
 ./bench plan config/revision-study.yaml
@@ -49,7 +49,9 @@ The measured cells are controlled single-host sensitivity tests. They do not rep
 
 The companion controls are `config/revision-cache-ttl.yaml` (response cache, freshness, and signature cache) and `config/revision-stress.yaml` (unsigned control, signing load, and matched CPU budgets across replicas). Run them one after another with `./bench reproduce CONFIG --no-build --no-setup` after the study. Campaigns keep failed attempts and report only complete repetitions.
 
-The following command recreates the TeX table and PDF figures used by the revised manuscript from all complete raw runs. It requires three complete repetitions of each of the six displayed study cells.
+The saved TTL campaign uses the earlier signature implementation; it is not a clean TTL comparison. Run `./bench reproduce config/revision-cache-ttl-fixed.yaml` to collect a separate corrected campaign after building the default ownership patch. The corrected campaign has not yet been measured.
+
+The following command recreates the TeX table and PDF figures used by the revised manuscript from all complete raw runs. It requires three complete repetitions in every displayed reference and sensitivity cell.
 
 ```bash
 ./bench export-paper results/revision/revision-study --ttl results/revision/revision-cache-ttl --stress results/revision/revision-stress --output ../paper/comnet/figures
@@ -58,8 +60,8 @@ The following command recreates the TeX table and PDF figures used by the revise
 A portable archive can be built without copying the temporary build tree or Docker images. The adjacent JSON manifest holds a SHA256 for the tar file and for each contained file. Archive creation and verification do not need the cluster.
 
 ```bash
-./bench package results/revision/revision-study results/revision/revision-cache-ttl results/revision/revision-stress --output release/revision-data.tar
-./bench verify-package release/revision-data.tar release/revision-data.tar.sha256.json
+./bench package results/revision/revision-study results/revision/revision-cache-ttl results/revision/revision-stress --output release/revision-data-audited.tar
+./bench verify-package release/revision-data-audited.tar release/revision-data-audited.tar.sha256.json
 ```
 
 Extract the archive in a separate directory and run `./bench report PATH/TO/revision-study` to rebuild the study tables and plots offline. The published archive location is intentionally left to the release process; the scripts do not download from an unverified or assumed URL. The result archive, its manifest, and the checked-in campaign YAMLs together identify the numerical evidence for the paper. The `release/`, `build/`, and `results/` directories are ignored by Git because raw campaign data and build objects are large.
@@ -75,3 +77,15 @@ build/venv/bin/python -m pip install -r config/revision-dev.requirements.txt
 ```
 
 The check runs Ruff lint and format verification, the Python regression tests, Go formatting verification, and shell syntax checks. Figure exports use the original blue and green bar palette and show all three runs as open circles. The figures are regenerated from complete runs without selecting a favorable repetition.
+
+## Audit corrections and the archived build
+
+The saved 66 study and control runs precede the signature ownership correction. Their response-cache experiment exposed shared RRSIG records: aging a response could reduce the TTL in the signature cache, confounding a one-versus-five-second cache comparison. The default build now applies `patches/plugin-signature-ownership.patch`. Its regression test demonstrates that a response cannot mutate another response or a stored signature. It also sets the RRSIG original TTL from the signed RRset. These fixes have not yet been measured in a new Kubernetes TTL campaign. To reproduce the measured baseline explicitly, use `BENCH_SIGNATURE_OWNERSHIP_FIX=0 ./bench reproduce CONFIG --output NEW_DIRECTORY`. Do not mix runs from the two builds in one comparison.
+
+Builds fetch the declared commits directly and always invoke Go's incremental build. The runner checks `build/source-manifest.json` before measurement so a changed patch cannot silently be paired with an old binary. The manifest records whether the ownership fix is present. Each run also records hashes of the Python acquisition source. Campaign resume refuses a changed acquisition implementation or build, and the deployed image tag must match the build manifest. Use a new output directory for the corrected implementation; archived campaigns remain available for offline analysis.
+
+For the archived schema, analysis computes CPU and signing rates between the first periodic load scrape and the end scrape. Those samples share a clock origin; the original pre-load snapshot did not. All repaired pod intervals span at least 29.97 seconds. New collection uses absolute monotonic timestamps. Missing verification in a signed run is an error, and every response frame must match its query ID, attempt index, and recorded length. Freshness uses the final DNS transaction and excludes responses overlapping the next update request. It counts older versions separately from unexpected addresses.
+
+The five manuscript figures cover the architecture, received DNS message sizes, signing work and CPU, traffic and TCP policy sensitivity, and cache/quota controls. The old response-size extrema and signing variability plots are not reused. The cache control is explicitly labeled as the measured interaction in the older build.
+
+Offline commands (`report`, `export-paper`, `package`, and `verify-package`) skip Kubernetes tool downloads once Python dependencies are installed. Starting the default four-GiB Kind node requires five GiB of available host memory; running with an existing node requires one GiB of available headroom. These are conservative guards, not a measured minimum host specification.

@@ -121,6 +121,19 @@ async def _tcp(host: str, port: int, wire: bytes) -> tuple[bytes, float]:
 
 def _classify(record: QueryRecord, wire: bytes, fqdn: str) -> bool:
     response = dns.message.from_wire(wire, raise_on_truncation=False)
+    question_matches = (
+        len(response.question) == 1
+        and response.question[0].name.to_text().lower() == fqdn.rstrip(".").lower() + "."
+        and response.question[0].rdtype == dns.rdatatype.A
+        and response.question[0].rdclass == 1
+    )
+    if (
+        not response.flags & dns.flags.QR
+        or response.opcode() != 0
+        or not question_matches
+        or response.id != record.dns_id
+    ):
+        raise ValueError("DNS response header or question does not match request")
     record.rcode = response.rcode()
     record.rrsig_answer = sum(s.rdtype == dns.rdatatype.RRSIG for s in response.answer)
     record.rrsig_authority = sum(s.rdtype == dns.rdatatype.RRSIG for s in response.authority)
@@ -190,16 +203,16 @@ async def _one(
                 if record.sent_s is None:
                     record.sent_s = sent - anchor
                 record.raw_responses.append(response)
+                attempt = {
+                    "transport": mode,
+                    "sent_s": sent - anchor,
+                    "received_s": time.monotonic() - anchor,
+                    "wire_bytes": len(response),
+                    "truncated": None,
+                }
+                record.attempts.append(attempt)
                 truncated = _classify(record, response, record.fqdn)
-                record.attempts.append(
-                    {
-                        "transport": mode,
-                        "sent_s": sent - anchor,
-                        "received_s": time.monotonic() - anchor,
-                        "wire_bytes": len(response),
-                        "truncated": truncated,
-                    }
-                )
+                attempt["truncated"] = truncated
                 if not truncated:
                     break
             if record.status == "truncated":
@@ -242,6 +255,8 @@ async def run_load(
     """Run a bounded measurement. output=None performs a real query warmup."""
     if rate <= 0 or duration_s <= 0 or max_inflight <= 0 or not names:
         raise ValueError("positive rate, duration, capacity, and names required")
+    if timeout_s <= 0 or tcp_connections < 1:
+        raise ValueError("positive timeout and TCP pool size required")
     if policy not in {"fresh_fallback", "fresh_tcp", "reused_tcp"}:
         raise ValueError(f"Unknown policy: {policy}")
     if arrival_mode not in {"poisson", "burst_2_of_20"}:
@@ -282,7 +297,6 @@ async def run_load(
             del doc["raw_responses"]
             files[0].write(json.dumps(doc, separators=(",", ":")) + "\n")
 
-    writer_task = asyncio.create_task(writer())
     running: set[asyncio.Task] = set()
 
     async def submit(record: QueryRecord) -> None:
@@ -305,43 +319,45 @@ async def run_load(
     offered = 0
     elapsed = 0.0
     try:
-        while True:
-            if arrival_mode == "poisson":
-                elapsed += arrival_rng.expovariate(rate)
-            else:
-                phase = elapsed % 20.0
-                segment_end = elapsed - phase + (2.0 if phase < 2.0 else 20.0)
-                segment_rate = rate * (10.0 if phase < 2.0 else 1.0) / burst_normalizer
-                candidate = elapsed + arrival_rng.expovariate(segment_rate)
-                elapsed = min(candidate, segment_end)
-                if candidate >= segment_end:
+        async with asyncio.TaskGroup() as group:
+            writer_task = group.create_task(writer())
+            while True:
+                if arrival_mode == "poisson":
+                    elapsed += arrival_rng.expovariate(rate)
+                else:
+                    phase = elapsed % 20.0
+                    segment_end = elapsed - phase + (2.0 if phase < 2.0 else 20.0)
+                    segment_rate = rate * (10.0 if phase < 2.0 else 1.0) / burst_normalizer
+                    candidate = elapsed + arrival_rng.expovariate(segment_rate)
+                    elapsed = min(candidate, segment_end)
+                    if candidate >= segment_end:
+                        continue
+                if elapsed >= duration_s:
+                    break
+                await asyncio.sleep(max(0.0, anchor + elapsed - time.monotonic()))
+                if name_provider is not None:
+                    fqdn = name_provider()
+                elif popularity == "uniform":
+                    fqdn = name_rng.choice(names)
+                else:
+                    fqdn = name_rng.choices(names, weights=weights, k=1)[0]
+                record = QueryRecord(query_id=offered, fqdn=fqdn, planned_s=elapsed)
+                offered += 1
+                if len(running) >= max_inflight:
+                    record.completed_s = time.monotonic() - anchor
+                    record.error = "max_inflight"
+                    record.latency_ms = (record.completed_s - elapsed) * 1000
+                    await queue.put(record)
                     continue
-            if elapsed >= duration_s:
-                break
-            await asyncio.sleep(max(0.0, anchor + elapsed - time.monotonic()))
-            if name_provider is not None:
-                fqdn = name_provider()
-            elif popularity == "uniform":
-                fqdn = name_rng.choice(names)
-            else:
-                fqdn = name_rng.choices(names, weights=weights, k=1)[0]
-            record = QueryRecord(query_id=offered, fqdn=fqdn, planned_s=elapsed)
-            offered += 1
-            if len(running) >= max_inflight:
-                record.completed_s = time.monotonic() - anchor
-                record.error = "max_inflight"
-                record.latency_ms = (record.completed_s - elapsed) * 1000
-                await queue.put(record)
-                continue
-            task = asyncio.create_task(submit(record))
-            running.add(task)
-        await asyncio.sleep(max(0.0, anchor + duration_s - time.monotonic()))
-        if at_window_end is not None:
-            await at_window_end()
-        if running:
-            await asyncio.gather(*running)
-        await queue.put(None)
-        await writer_task
+                task = group.create_task(submit(record))
+                running.add(task)
+            await asyncio.sleep(max(0.0, anchor + duration_s - time.monotonic()))
+            if at_window_end is not None:
+                await at_window_end()
+            if running:
+                await asyncio.gather(*running)
+            await queue.put(None)
+            await writer_task
     finally:
         if pool is not None:
             await pool.close()

@@ -94,6 +94,8 @@ def plot_campaign(summaries: list[dict], by_cell: dict[str, list[dict]], output:
     fig.savefig(output / "latency_cpu.png", dpi=150)
     plt.close(fig)
 
+    plot_wire_sizes(by_cell, output)
+    plot_sensitivity(by_cell, output)
     selected = [(key, label) for key, label in REFERENCE_CELLS if key in by_cell]
     if not selected:
         return
@@ -110,11 +112,11 @@ def plot_campaign(summaries: list[dict], by_cell: dict[str, list[dict]], output:
     fig, axes = plt.subplots(2, 1, figsize=(8.5, 5.4), sharex=True)
     bar_points(
         axes[0],
-        [_values(by_cell, key, "p99_ms") for key in keys],
+        [_values(by_cell, key, "signs_per_s") for key in keys],
         labels,
         colors,
-        "P99 (ms)",
-        "(a) DNS query latency",
+        "Signing operations/s",
+        "(a) Signing work",
     )
     bar_points(
         axes[1],
@@ -127,4 +129,77 @@ def plot_campaign(summaries: list[dict], by_cell: dict[str, list[dict]], output:
     fig.tight_layout()
     fig.savefig(output / "revision_contrasts.pdf")
     fig.savefig(output / "revision_contrasts.png", dpi=180)
+    plt.close(fig)
+
+
+def plot_wire_sizes(by_cell: dict[str, list[dict]], output: Path) -> None:
+    cells = REFERENCE_CELLS[:4]
+    if not all(key in by_cell for key, _ in cells):
+        return
+    fig, ax = plt.subplots(figsize=(6.2, 3.3))
+    ax.set_axisbelow(True)
+    ax.grid(axis="y", linestyle="--", linewidth=0.6, alpha=0.4)
+    for offset, field, color, label in (
+        (-0.18, "udp_wire_p50_bytes", UNCACHED_GREEN, "First UDP reply"),
+        (0.18, "final_wire_p50_bytes", CACHE_BLUE, "Complete answer"),
+    ):
+        for i, (key, _) in enumerate(cells):
+            runs = _values(by_cell, key, field)
+            ax.bar(
+                i + offset,
+                statistics.median(runs),
+                width=0.34,
+                color=color,
+                edgecolor=INK,
+                linewidth=0.7,
+                label=label if i == 0 else None,
+            )
+            ax.scatter(
+                [i + offset + (j - 1) * 0.06 for j in range(len(runs))],
+                runs,
+                s=14,
+                facecolor="white",
+                edgecolor=INK,
+                linewidth=0.7,
+                zorder=3,
+            )
+    ax.axhline(1232, color="#bd4f24", linestyle="--", label="Advertised UDP payload: 1232 B")
+    ax.set_yscale("log")
+    ax.set_ylim(40, 7500)
+    ax.set_xticks(range(len(cells)), [label for _, label in cells])
+    ax.set_ylabel("DNS message bytes")
+    ax.set_title("Received DNS response sizes", fontweight="bold")
+    ax.legend(fontsize=8, loc="upper left", frameon=False)
+    fig.tight_layout()
+    fig.savefig(output / "revision_wire_sizes.pdf")
+    fig.savefig(output / "revision_wire_sizes.png", dpi=180)
+    plt.close(fig)
+
+
+def plot_sensitivity(by_cell: dict[str, list[dict]], output: Path) -> None:
+    cells = [
+        ("mldsa44-reference", "Uniform\nPoisson"),
+        ("mldsa44-burst", "Bursts"),
+        ("mldsa44-zipf", "Zipf\npopularity"),
+        ("mldsa44-two-replicas", "Two pods\n1 core each"),
+        ("mldsa44-reused-tcp", "Persistent\nTCP"),
+    ]
+    if not all(key in by_cell for key, _ in cells):
+        return
+    fig, axes = plt.subplots(1, 2, figsize=(10.5, 3.7))
+    for ax, field, title in (
+        (axes[0], "p99_ms", "(a) Complete query latency"),
+        (axes[1], "dispatch_p99_ms", "(b) Client dispatch delay"),
+    ):
+        bar_points(
+            ax,
+            [_values(by_cell, key, field) for key, _ in cells],
+            [label for _, label in cells],
+            [CACHE_BLUE] * len(cells),
+            "P99 (ms)",
+            title,
+        )
+    fig.tight_layout()
+    fig.savefig(output / "revision_sensitivity.pdf")
+    fig.savefig(output / "revision_sensitivity.png", dpi=180)
     plt.close(fig)

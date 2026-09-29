@@ -177,6 +177,7 @@ class Metrics:
             try:
                 series = await asyncio.to_thread(_fetch, forward.url)
                 sample = {
+                    "monotonic_s": time.monotonic(),
                     "t_s": time.monotonic() - self.anchor,
                     "phase": phase,
                     "pod": pod["name"],
@@ -186,6 +187,7 @@ class Metrics:
                 }
             except Exception as exc:
                 sample = {
+                    "monotonic_s": time.monotonic(),
                     "t_s": time.monotonic() - self.anchor,
                     "phase": phase,
                     "pod": pod["name"],
@@ -214,6 +216,41 @@ class Metrics:
         self.forwards.clear()
 
 
+def measurement_window(samples: list[dict]) -> tuple[dict, dict, str]:
+    """Use one clock domain; legacy start snapshots preceded a clock reset.
+
+    Legacy runs retain periodic samples in the load clock domain. Their first
+    complete periodic scrape and the end snapshot provide an observed interval
+    without guessing the missing clock offset.
+    """
+    ends = [row for row in samples if row["phase"] == "measurement_end"]
+    if len(ends) != 1:
+        raise ValueError("Expected exactly one measurement end snapshot")
+    end = ends[0]
+    if "monotonic_s" in end:
+        starts = [row for row in samples if row["phase"] == "measurement_start"]
+        if len(starts) != 1 or "monotonic_s" not in starts[0]:
+            raise ValueError("Missing absolute clock boundary")
+        return starts[0], end, "absolute_monotonic_boundaries"
+    first = next(
+        (
+            row
+            for row in samples
+            if row["phase"] == "measurement"
+            and "process_cpu_seconds_total" in row.get("series", {})
+        ),
+        None,
+    )
+    if first is None:
+        raise ValueError("Legacy run has no periodic sample in the load clock domain")
+    return first, end, "legacy_first_periodic_to_end"
+
+
+def window_elapsed(first: dict, last: dict) -> float:
+    field = "monotonic_s" if "monotonic_s" in last else "t_s"
+    return last[field] - first[field]
+
+
 def validate_window(path: Path, duration_s: float, expected_pods: int) -> dict:
     """Reject runs whose CPU window or periodic samples are incomplete."""
     rows = [json.loads(line) for line in path.open()]
@@ -229,7 +266,7 @@ def validate_window(path: Path, duration_s: float, expected_pods: int) -> dict:
         period = [x for x in samples if x["phase"] == "measurement"]
         if len(starts) != 1 or len(ends) != 1:
             raise RuntimeError(f"Missing metric boundary for pod {uid}")
-        first, last = starts[0], ends[0]
+        first, last, source = measurement_window(samples)
         for x in (first, last):
             series = x.get("series", {})
             if (
@@ -248,7 +285,7 @@ def validate_window(path: Path, duration_s: float, expected_pods: int) -> dict:
             "process_start_time_seconds"
         ):
             raise RuntimeError(f"CoreDNS process restarted during measurement for pod {uid}")
-        if last["t_s"] - first["t_s"] < duration_s * 0.9:
+        if window_elapsed(first, last) < duration_s * 0.9:
             raise RuntimeError(f"Short metrics window for pod {uid}")
         good = sum("series" in x and "process_cpu_seconds_total" in x["series"] for x in period)
         if good < duration_s * 0.8:
@@ -258,7 +295,8 @@ def validate_window(path: Path, duration_s: float, expected_pods: int) -> dict:
             "periodic_total": len(period),
             "cpu_seconds": last["series"]["process_cpu_seconds_total"]
             - first["series"]["process_cpu_seconds_total"],
-            "elapsed_s": last["t_s"] - first["t_s"],
+            "elapsed_s": window_elapsed(first, last),
+            "window_source": source,
         }
     return result
 

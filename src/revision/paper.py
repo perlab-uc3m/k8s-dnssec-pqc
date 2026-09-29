@@ -6,7 +6,7 @@ import csv
 import shutil
 from pathlib import Path
 
-from revision.report import report
+from .report import report
 
 CELLS = [
     ("unsigned-reference", "Unsigned"),
@@ -27,8 +27,16 @@ def export_paper(campaign: Path, output: Path) -> None:
     rows = {
         r["cell_id"]: r for r in csv.DictReader((campaign / "tables/cell_summaries.csv").open())
     }
-    if any(key not in rows or int(rows[key]["repetitions_complete"]) != 3 for key, _ in CELLS):
-        raise ValueError("Paper export requires three complete runs per reference cell")
+    required_cells = {key for key, _ in CELLS} | {
+        "mldsa44-burst",
+        "mldsa44-zipf",
+        "mldsa44-two-replicas",
+        "mldsa44-reused-tcp",
+    }
+    if any(
+        key not in rows or int(rows[key]["repetitions_complete"]) != 3 for key in required_cells
+    ):
+        raise ValueError("Paper export requires three complete runs per displayed cell")
     output.mkdir(parents=True, exist_ok=True)
     lines = [
         r"\begin{table*}[t]",
@@ -51,7 +59,8 @@ def export_paper(campaign: Path, output: Path) -> None:
         )
     lines.extend([r"\hline", r"\end{tabular}", r"\end{table*}"])
     (output / "revision_results_table.tex").write_text("\n".join(lines) + "\n")
-    shutil.copyfile(campaign / "figures/revision_contrasts.pdf", output / "revision_contrasts.pdf")
+    for name in ("revision_contrasts", "revision_wire_sizes", "revision_sensitivity"):
+        shutil.copyfile(campaign / f"figures/{name}.pdf", output / f"{name}.pdf")
 
 
 def _grouped_runs(campaign: Path) -> dict[str, list[dict]]:
@@ -91,7 +100,7 @@ def export_controls(ttl_campaign: Path, stress_campaign: Path, output: Path) -> 
 
     import matplotlib.pyplot as plt
 
-    from revision.figures import CACHE_BLUE, UNCACHED_GREEN, bar_points
+    from .figures import CACHE_BLUE, UNCACHED_GREEN, bar_points
 
     fig, axes = plt.subplots(1, 3, figsize=(10.5, 3.4))
     ttl_labels = [label for _, label in ttl_keys]
@@ -102,7 +111,7 @@ def export_controls(ttl_campaign: Path, stress_campaign: Path, output: Path) -> 
         ttl_labels,
         [CACHE_BLUE] * 3 + [UNCACHED_GREEN],
         "Signed stale answers (%)",
-        "(a) Response cache",
+        "(a) Legacy cache interaction",
     )
     bar_points(
         axes[1],

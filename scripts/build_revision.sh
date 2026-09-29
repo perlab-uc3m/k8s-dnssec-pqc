@@ -6,7 +6,10 @@ mkdir -p "$build_dir"
 clone_exact() {
     local url="$1" branch="$2" sha="$3" dest="$4"
     if [ ! -d "$dest/.git" ]; then
-        git clone --depth 1 --branch "$branch" "$url" "$dest"
+        git init "$dest"
+        git -C "$dest" remote add origin "$url"
+        git -C "$dest" fetch --depth 1 origin "$sha"
+        git -C "$dest" checkout --detach FETCH_HEAD
     fi
     test "$(git -C "$dest" rev-parse HEAD)" = "$sha"
 }
@@ -30,6 +33,26 @@ elif ! git -C "$build_dir/dnssec_pqc_plugin" apply --reverse --check "$repo_dir/
     echo "Plugin fork has unexpected changes; refusing to build" >&2
     exit 1
 fi
+# Default to isolated response records. The baseline option reproduces the
+# archived runs whose TTL comparison exposed shared signature mutation.
+ownership_patch="$repo_dir/patches/plugin-signature-ownership.patch"
+case "${BENCH_SIGNATURE_OWNERSHIP_FIX:-1}" in
+    1)
+        if git -C "$build_dir/dnssec_pqc_plugin" apply --check "$ownership_patch" 2>/dev/null; then
+            git -C "$build_dir/dnssec_pqc_plugin" apply "$ownership_patch"
+        else
+            git -C "$build_dir/dnssec_pqc_plugin" apply --reverse --check "$ownership_patch"
+        fi
+        ;;
+    0)
+        if git -C "$build_dir/dnssec_pqc_plugin" apply --reverse --check "$ownership_patch" 2>/dev/null; then
+            git -C "$build_dir/dnssec_pqc_plugin" apply --reverse "$ownership_patch"
+        else
+            git -C "$build_dir/dnssec_pqc_plugin" apply --check "$ownership_patch"
+        fi
+        ;;
+    *) echo "BENCH_SIGNATURE_OWNERSHIP_FIX must be 0 or 1" >&2; exit 1 ;;
+esac
 if [ ! -f "$build_dir/local/lib/liboqs.so" ]; then
     cmake -S "$build_dir/liboqs" -B "$build_dir/liboqs/out" -G Ninja \
         -DCMAKE_INSTALL_PREFIX="$build_dir/local" \
@@ -51,7 +74,7 @@ export GOMAXPROCS="${BUILD_JOBS:-2}"
 export GOMEMLIMIT="${BUILD_GO_MEMORY:-1GiB}"
 export PKG_CONFIG_PATH="$build_dir/local/lib/pkgconfig"
 export LD_LIBRARY_PATH="$build_dir/local/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-if [ ! -f "$build_dir/coredns-pqc" ]; then
+(
     cd "$build_dir/coredns"
     cat > plugin.cfg <<'PLUGINS'
 root:root
@@ -69,9 +92,9 @@ PLUGINS
         -replace "github.com/qursa-uc3m/dnssec_pqc_plugin=$build_dir/dnssec_pqc_plugin" \
         -require "github.com/qursa-uc3m/dnssec_pqc_plugin@v0.1.1"
     go run directives_generate.go
-    CGO_ENABLED=1 go test github.com/qursa-uc3m/dnssec_pqc_plugin -run TestSigningFailureReturnsSERVFAIL -count=1
+    CGO_ENABLED=1 go test github.com/qursa-uc3m/dnssec_pqc_plugin -run 'TestSigningFailureReturnsSERVFAIL|TestSignatureResponseOwnership' -count=1
     CGO_ENABLED=1 go build -o "$build_dir/coredns-pqc"
-fi
+)
 cd "$build_dir/dns"
 CGO_ENABLED=1 go test . -run TestPQCVerifyRepeatedAndTampered -count=1
 CGO_ENABLED=1 go build -o "$build_dir/verify-dns" "$repo_dir/tools/verify/main.go"
@@ -93,3 +116,16 @@ docker build -t coredns-pqc:revision "$build_dir/image"
 go version -m "$build_dir/coredns-pqc" > "$build_dir/go-build-info.txt"
 docker image inspect coredns-pqc:revision --format '{{.Id}}' > "$build_dir/image-id.txt"
 echo "Built coredns-pqc:revision; image ID $(cat "$build_dir/image-id.txt")"
+
+"$build_dir/venv/bin/python" - "$repo_dir" "${BENCH_SIGNATURE_OWNERSHIP_FIX:-1}" <<'PYMANIFEST'
+import hashlib, json, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+paths = sorted((root / "patches").glob("*.patch")) + sorted((root / "tools").rglob("*.go"))
+paths += [root / "scripts/build_revision.sh"]
+record = {"signature_ownership_fix": sys.argv[2] == "1",
+          "image_id": (root / "build/image-id.txt").read_text().strip(),
+          "inputs": {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest() for p in paths},
+          "binary_sha256": hashlib.sha256((root / "build/coredns-pqc").read_bytes()).hexdigest()}
+(root / "build/source-manifest.json").write_text(json.dumps(record, indent=2) + "\n")
+PYMANIFEST

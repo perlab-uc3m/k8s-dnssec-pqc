@@ -6,6 +6,10 @@ if [ ! -x "$repo_dir/build/venv/bin/python" ]; then
     python3 -m venv "$repo_dir/build/venv"
     "$repo_dir/build/venv/bin/python" -m pip install -r "$repo_dir/config/revision-python.lock"
 fi
+# Offline analysis needs Python dependencies, but no Kubernetes executables.
+if [ "${BENCH_BOOTSTRAP_TOOLS:-1}" = "0" ]; then
+    exit 0
+fi
 fetch_tool() {
     local name="$1" url="$2" sha="$3"
     local file="$repo_dir/build/tools/$name"

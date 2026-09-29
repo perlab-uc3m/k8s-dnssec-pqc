@@ -19,12 +19,12 @@ import dns.query
 import dns.rdatatype
 import yaml
 
-from revision.metrics import Metrics, cgroup_sample, validate_window
-from revision.package import package, verify_package
-from revision.paper import export_controls, export_paper
-from revision.queries import run_load
-from revision.report import report, summarize_run
-from revision.workload import HeadlessWorkload, endpoint_address
+from .metrics import Metrics, cgroup_sample, validate_window
+from .package import package, verify_package
+from .paper import export_controls, export_paper
+from .queries import run_load
+from .report import report, summarize_run
+from .workload import HeadlessWorkload, endpoint_address
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -75,8 +75,38 @@ def artifact_hash(path: Path) -> str:
     return digest.hexdigest()
 
 
+def validated_build_manifest() -> dict:
+    path = ROOT / "build/source-manifest.json"
+    if not path.exists():
+        raise ValueError("Missing build source manifest; run ./bench reproduce without --no-build")
+    record = json.loads(path.read_text())
+    for name, expected in record["inputs"].items():
+        if artifact_hash(ROOT / name) != expected:
+            raise ValueError(f"Build input changed: {name}; rebuild before measurement")
+    if artifact_hash(ROOT / "build/coredns-pqc") != record["binary_sha256"]:
+        raise ValueError("CoreDNS binary differs from its build manifest")
+    return record
+
+
+def freeze_acquisition(output: Path, record: dict) -> None:
+    """Prevent resumed campaigns from mixing measurement implementations."""
+    path = output / "acquisition_manifest.json"
+    if path.exists():
+        if json.loads(path.read_text()) != record:
+            raise ValueError(
+                "Campaign build or acquisition source changed; use a new output directory"
+            )
+    elif list(output.glob("runs/*/rep-*/attempt-*/COMPLETE")):
+        raise ValueError(
+            "Archived campaign has no build guard; use report or a new output directory"
+        )
+    else:
+        path.write_text(json.dumps(record, indent=2) + "\n")
+
+
 def host_manifest() -> dict:
     manifest = {
+        "build": validated_build_manifest(),
         "platform": platform.platform(),
         "python": sys.version,
         "utc_start": time.time(),
@@ -114,6 +144,11 @@ def host_manifest() -> dict:
             ).strip()
     manifest["dns_patch_sha256"] = artifact_hash(ROOT / "patches/dns-pqc-verify.patch")
     manifest["plugin_patch_sha256"] = artifact_hash(ROOT / "patches/plugin-signing-failure.patch")
+    manifest["harness_sha256"] = {
+        str(path.relative_to(ROOT)): artifact_hash(path)
+        for path in sorted((ROOT / "src/revision").glob("*.py"))
+    }
+    manifest["timing_schema"] = 2
     manifest["go_version"] = subprocess.check_output(["go", "version"], text=True).strip()
     governor = Path("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor")
     if governor.is_file():
@@ -237,11 +272,10 @@ async def run_one(doc: dict, cell: dict, repetition: int, attempt: Path, kubectl
         )
         (attempt / "warmup.json").write_text(json.dumps(warmup, indent=2) + "\n")
         metrics.start(time.monotonic())
-        await metrics.sample("measurement_start")
         await cgroup_sample(metrics, "measurement_start")
+        await metrics.sample("measurement_start")
         anchor = time.monotonic()
         utc_anchor = time.time()
-        metrics.anchor = anchor
         update_task = asyncio.create_task(
             fixture.changes(attempt, anchor, doc["measurement_s"], doc.get("update_rate", 0))
         )
@@ -317,6 +351,16 @@ async def run_one(doc: dict, cell: dict, repetition: int, attempt: Path, kubectl
 
 async def reproduce(path: Path, output: Path, *, build: bool, setup: bool) -> None:
     doc = config(path)
+    memory = dict(
+        (line.partition(":")[0], int(line.partition(":")[2].split()[0]))
+        for line in Path("/proc/meminfo").read_text().splitlines()
+    )
+    required_kib = (5 if setup else 1) * 1024 * 1024
+    if memory["MemAvailable"] < required_kib:
+        raise RuntimeError(
+            f"Insufficient host memory headroom: {memory['MemAvailable'] / 1024**2:.2f} GiB available; "
+            f"{required_kib / 1024**2:g} GiB required for this step. No campaign parameters were changed."
+        )
     output.mkdir(parents=True, exist_ok=True)
     frozen = output / "campaign.yaml"
     if frozen.exists() and frozen.read_bytes() != path.read_bytes():
@@ -326,6 +370,26 @@ async def reproduce(path: Path, output: Path, *, build: bool, setup: bool) -> No
     (output / "campaign_sha256.txt").write_text(artifact_hash(frozen) + "\n")
     if build:
         command([str(ROOT / "scripts/build_revision.sh")])
+    build_record = validated_build_manifest()
+    actual_image = subprocess.check_output(
+        ["docker", "image", "inspect", "coredns-pqc:revision", "--format", "{{.Id}}"], text=True
+    ).strip()
+    if actual_image != build_record["image_id"]:
+        raise ValueError(
+            "CoreDNS image tag differs from the build manifest; rebuild before measurement"
+        )
+    acquisition_files = [
+        ROOT / "src/revision" / name
+        for name in ("cli.py", "metrics.py", "queries.py", "workload.py")
+    ]
+    acquisition_files.append(ROOT / "scripts/deploy_coredns.sh")
+    freeze_acquisition(
+        output,
+        {
+            "build": build_record,
+            "acquisition": {str(p.relative_to(ROOT)): artifact_hash(p) for p in acquisition_files},
+        },
+    )
     if setup:
         command([str(ROOT / "scripts/setup_revision_cluster.sh")])
     kubectl = str(ROOT / "build/tools/kubectl")

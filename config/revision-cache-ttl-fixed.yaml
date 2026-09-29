@@ -1,0 +1,42 @@
+# Follow-up for the signature ownership fix. No results have been collected yet.
+schema_version: 1
+campaign_id: revision-cache-ttl-fixed
+context: kind-pqc-dnssec-revision
+namespace: bench
+domain: cluster.local
+repetitions: 3
+warmup_s: 5
+measurement_s: 30
+query_rate: 100
+update_rate: 1
+names: 32
+sig_cache_cap: 1024
+response_cache_ttl: 0
+record_ttl: 5
+cpu_limit: '1'
+memory_limit: 512Mi
+transport_policy: fresh_fallback
+arrival_mode: poisson
+popularity: uniform
+seed: 20261002
+cells:
+  - id: mldsa44-response-off
+    algorithm: ML-DSA-44
+    algorithm_id: 18
+    algorithm_type: pqc
+  - id: mldsa44-response-ttl1
+    algorithm: ML-DSA-44
+    algorithm_id: 18
+    algorithm_type: pqc
+    response_cache_ttl: 1
+  - id: mldsa44-response-ttl5
+    algorithm: ML-DSA-44
+    algorithm_id: 18
+    algorithm_type: pqc
+    response_cache_ttl: 5
+  - id: mldsa44-no-sig-cache-response-ttl1
+    algorithm: ML-DSA-44
+    algorithm_id: 18
+    algorithm_type: pqc
+    sig_cache_cap: 0
+    response_cache_ttl: 1

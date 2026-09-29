@@ -1,0 +1,94 @@
+diff --git a/dnssec_pqc.go b/dnssec_pqc.go
+--- a/dnssec_pqc.go
++++ b/dnssec_pqc.go
+@@ -156,7 +156,7 @@
+ 	k := hash(rrs)
+ 	sgs, ok := d.get(k, server)
+ 	if ok {
+-		return sgs, nil
++		return copySignatures(sgs), nil
+ 	}
+ 	// Track whether this goroutine was the singleflight leader (executed fn)
+ 	// or a coalesced waiter (shared the result).
+@@ -220,7 +220,17 @@
+ 	if atomic.LoadInt32(&executed) == 0 {
+ 		singleflightCoalesced.WithLabelValues(server).Inc()
+ 	}
+-	return sigs.([]dns.RR), err
++	return copySignatures(sigs.([]dns.RR)), err
++}
++
++// Each response owns its records. Downstream response caching ages TTL fields;
++// neither the signature cache nor singleflight callers may share those writes.
++func copySignatures(sigs []dns.RR) []dns.RR {
++	copies := make([]dns.RR, len(sigs))
++	for i, sig := range sigs {
++		copies[i] = dns.Copy(sig)
++	}
++	return copies
+ }
+ 
+ func (d Dnssec) set(key uint64, sigs []dns.RR) {
+diff --git a/rrsig.go b/rrsig.go
+--- a/rrsig.go
++++ b/rrsig.go
+@@ -11,7 +11,7 @@
+ 	sig.KeyTag = k.tag
+ 	sig.SignerName = signerName
+ 	sig.Hdr.Ttl = ttl
+-	sig.OrigTtl = origTTL
++	sig.OrigTtl = ttl
+ 
+ 	sig.Inception = incep
+ 	sig.Expiration = expir
+diff --git a/signature_ownership_test.go b/signature_ownership_test.go
+new file mode 100644
+--- /dev/null
++++ b/signature_ownership_test.go
+@@ -0,0 +1,46 @@
++package dnssec_pqc
++
++import (
++	"github.com/miekg/dns"
++	"testing"
++	"time"
++)
++
++func TestSignatureResponseOwnership(t *testing.T) {
++	d, rm1, rm2 := newDnssec(t, []string{"miek.nl."})
++	defer rm1()
++	defer rm2()
++	rr, err := dns.NewRR("test.miek.nl. 5 IN A 10.250.0.1")
++	if err != nil {
++		t.Fatal(err)
++	}
++	rrset := []dns.RR{rr}
++	inception, expiration := incepExpir(time.Now())
++	first, err := d.sign(rrset, "miek.nl.", 5, inception, expiration, "ownership")
++	if err != nil || len(first) != 1 {
++		t.Fatalf("signing: %v %v", first, err)
++	}
++	// The downstream response cache ages TTLs. It must not alter a stored signature.
++	if first[0].(*dns.RRSIG).OrigTtl != 5 {
++		t.Fatal("Original TTL differs from the signed RRset")
++	}
++	if err := first[0].(*dns.RRSIG).Verify(d.keys[0].K, rrset); err != nil {
++		t.Fatal(err)
++	}
++	first[0].Header().Ttl = 1
++	second, err := d.sign(rrset, "miek.nl.", 5, inception, expiration, "ownership")
++	if err != nil {
++		t.Fatal(err)
++	}
++	if second[0].Header().Ttl != 5 {
++		t.Fatalf("response cache changed signature cache TTL to %d", second[0].Header().Ttl)
++	}
++	second[0].Header().Ttl = 2
++	third, err := d.sign(rrset, "miek.nl.", 5, inception, expiration, "ownership")
++	if err != nil {
++		t.Fatal(err)
++	}
++	if third[0].Header().Ttl != 5 {
++		t.Fatal("cache hits share mutable signature records")
++	}
++}
