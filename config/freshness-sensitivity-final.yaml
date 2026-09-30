@@ -1,0 +1,114 @@
+# Matched traffic and transport controls; six complete burst cycles per measurement.
+schema_version: 1
+campaign_id: freshness-sensitivity-final
+study: algorithm_freshness_interaction
+context: kind-pqc-dnssec-revision
+namespace: bench
+domain: cluster.local
+repetitions: 3
+cell_order: randomized
+warmup_s: 20
+measurement_s: 120
+dynamic_warmup: true
+require_ownership_fix: true
+query_rate: 100
+update_rate: 16
+names: 32
+sig_cache_cap: 9984
+response_cache_ttl: 0
+record_ttl: 5
+cpu_limit: '0.5'
+memory_limit: 512Mi
+transport_policy: reused_tcp
+arrival_mode: poisson
+popularity: uniform
+max_inflight: 128
+tcp_connections: 64
+timeout_s: 2.0
+seed: 20261001
+cells:
+- id: ed25519-reference
+  algorithm: ED25519
+  algorithm_id: 15
+  algorithm_type: classical
+- id: ed25519-burst
+  algorithm: ED25519
+  algorithm_id: 15
+  algorithm_type: classical
+  arrival_mode: burst_2_of_20
+- id: ed25519-zipf
+  algorithm: ED25519
+  algorithm_id: 15
+  algorithm_type: classical
+  popularity: zipf_1_1
+- id: ed25519-fresh-fallback
+  algorithm: ED25519
+  algorithm_id: 15
+  algorithm_type: classical
+  transport_policy: fresh_fallback
+- id: mldsa44-reference
+  algorithm: ML-DSA-44
+  algorithm_id: 18
+  algorithm_type: pqc
+- id: mldsa44-burst
+  algorithm: ML-DSA-44
+  algorithm_id: 18
+  algorithm_type: pqc
+  arrival_mode: burst_2_of_20
+- id: mldsa44-zipf
+  algorithm: ML-DSA-44
+  algorithm_id: 18
+  algorithm_type: pqc
+  popularity: zipf_1_1
+- id: mldsa44-fresh-fallback
+  algorithm: ML-DSA-44
+  algorithm_id: 18
+  algorithm_type: pqc
+  transport_policy: fresh_fallback
+- id: falcon512-reference
+  algorithm: Falcon-512
+  algorithm_id: 17
+  algorithm_type: pqc
+- id: falcon512-burst
+  algorithm: Falcon-512
+  algorithm_id: 17
+  algorithm_type: pqc
+  arrival_mode: burst_2_of_20
+- id: falcon512-zipf
+  algorithm: Falcon-512
+  algorithm_id: 17
+  algorithm_type: pqc
+  popularity: zipf_1_1
+- id: falcon512-fresh-fallback
+  algorithm: Falcon-512
+  algorithm_id: 17
+  algorithm_type: pqc
+  transport_policy: fresh_fallback
+- id: falcon512-cpu0.125-ttl0-poisson
+  algorithm: Falcon-512
+  algorithm_id: 17
+  algorithm_type: pqc
+  cpu_limit: '0.125'
+  response_cache_ttl: 0
+  arrival_mode: poisson
+- id: falcon512-cpu0.125-ttl0-burst_2_of_20
+  algorithm: Falcon-512
+  algorithm_id: 17
+  algorithm_type: pqc
+  cpu_limit: '0.125'
+  response_cache_ttl: 0
+  arrival_mode: burst_2_of_20
+- id: falcon512-cpu0.125-ttl5-poisson
+  algorithm: Falcon-512
+  algorithm_id: 17
+  algorithm_type: pqc
+  cpu_limit: '0.125'
+  response_cache_ttl: 5
+  arrival_mode: poisson
+- id: falcon512-cpu0.125-ttl5-burst_2_of_20
+  algorithm: Falcon-512
+  algorithm_id: 17
+  algorithm_type: pqc
+  cpu_limit: '0.125'
+  response_cache_ttl: 5
+  arrival_mode: burst_2_of_20

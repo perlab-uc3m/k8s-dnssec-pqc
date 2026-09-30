@@ -23,7 +23,11 @@ def _fmt(value: str, digits: int) -> str:
 
 
 def export_paper(campaign: Path, output: Path) -> None:
-    report(campaign)
+    summaries = report(campaign)
+    if any(not row["cpu_metrics_valid"] for row in summaries):
+        raise ValueError(
+            "The historical paper table requires complete CPU windows; query outcomes remain in the report"
+        )
     rows = {
         r["cell_id"]: r for r in csv.DictReader((campaign / "tables/cell_summaries.csv").open())
     }

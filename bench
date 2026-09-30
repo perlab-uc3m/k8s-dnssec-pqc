@@ -1,8 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ "$#" -eq 0 ]; then
+    set -- reproduce "$repo_dir/config/freshness-smoke.yaml"
+fi
+if [ "${1:-}" = "final" ]; then
+    shift
+    if [ "$#" -ne 0 ]; then echo "Usage: ./bench final" >&2; exit 2; fi
+    exec "$repo_dir/scripts/run_final_campaigns.sh"
+fi
 case "${1:-}" in
-    report|export-paper|package|verify-package) export BENCH_BOOTSTRAP_TOOLS=0 ;;
+    plan|report|export-paper|package|verify-package) export BENCH_BOOTSTRAP_TOOLS=0 ;;
 esac
 "$repo_dir/scripts/bootstrap_revision.sh"
 export LD_LIBRARY_PATH="$repo_dir/build/local/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"

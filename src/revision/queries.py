@@ -36,9 +36,13 @@ class QueryRecord:
     status: str = "client_rejected"
     rcode: int | None = None
     answer_a: list[str] = field(default_factory=list)
+    answer_ttls: list[int] = field(default_factory=list)
+    rrsig_original_ttls: list[int] = field(default_factory=list)
     rrsig_answer: int = 0
     rrsig_authority: int = 0
     rrsig_additional: int = 0
+    # Write attempts are retained even if no response arrives.
+    transmissions: list[dict] = field(default_factory=list)
     attempts: list[dict] = field(default_factory=list)
     error: str | None = None
     latency_ms: float | None = None
@@ -57,13 +61,17 @@ class ReusedTCP:
         for _ in range(size):
             self.slots.put_nowait(None)
 
-    async def query(self, wire: bytes, deadline: float) -> tuple[bytes, float]:
+    async def query(
+        self, wire: bytes, deadline: float, on_send: Callable[[float], None] | None = None
+    ) -> tuple[bytes, float]:
         slot = await self.slots.get()
         try:
             if slot is None or slot[1].is_closing():
                 slot = await asyncio.open_connection(self.host, self.port)
             reader, writer = slot
             sent = time.monotonic()
+            if on_send is not None:
+                on_send(sent)
             writer.write(struct.pack(">H", len(wire)) + wire)
             await writer.drain()
             length = struct.unpack(">H", await reader.readexactly(2))[0]
@@ -88,7 +96,9 @@ class ReusedTCP:
                     pass
 
 
-async def _udp(host: str, port: int, wire: bytes) -> tuple[bytes, float]:
+async def _udp(
+    host: str, port: int, wire: bytes, on_send: Callable[[float], None] | None = None
+) -> tuple[bytes, float]:
     loop = asyncio.get_running_loop()
     addr = socket.getaddrinfo(host, port, type=socket.SOCK_DGRAM)[0]
     sock = socket.socket(addr[0], socket.SOCK_DGRAM)
@@ -96,6 +106,8 @@ async def _udp(host: str, port: int, wire: bytes) -> tuple[bytes, float]:
     try:
         await loop.sock_connect(sock, addr[4])
         sent = time.monotonic()
+        if on_send is not None:
+            on_send(sent)
         await loop.sock_sendall(sock, wire)
         response = await loop.sock_recv(sock, 65535)
         return response, sent
@@ -103,10 +115,14 @@ async def _udp(host: str, port: int, wire: bytes) -> tuple[bytes, float]:
         sock.close()
 
 
-async def _tcp(host: str, port: int, wire: bytes) -> tuple[bytes, float]:
+async def _tcp(
+    host: str, port: int, wire: bytes, on_send: Callable[[float], None] | None = None
+) -> tuple[bytes, float]:
     reader, writer = await asyncio.open_connection(host, port)
     try:
         sent = time.monotonic()
+        if on_send is not None:
+            on_send(sent)
         writer.write(struct.pack(">H", len(wire)) + wire)
         await writer.drain()
         length = struct.unpack(">H", await reader.readexactly(2))[0]
@@ -135,6 +151,13 @@ def _classify(record: QueryRecord, wire: bytes, fqdn: str) -> bool:
     ):
         raise ValueError("DNS response header or question does not match request")
     record.rcode = response.rcode()
+    record.answer_ttls = [rrset.ttl for rrset in response.answer]
+    record.rrsig_original_ttls = [
+        rr.original_ttl
+        for rrset in response.answer
+        if rrset.rdtype == dns.rdatatype.RRSIG
+        for rr in rrset
+    ]
     record.rrsig_answer = sum(s.rdtype == dns.rdatatype.RRSIG for s in response.answer)
     record.rrsig_authority = sum(s.rdtype == dns.rdatatype.RRSIG for s in response.authority)
     record.rrsig_additional = sum(s.rdtype == dns.rdatatype.RRSIG for s in response.additional)
@@ -193,15 +216,22 @@ async def _one(
             else:
                 raise ValueError(f"Unknown transport policy: {policy}")
             for mode in modes:
+
+                def on_send(sent: float, transport: str = mode) -> None:
+                    # Timestamp the client write attempt, not confirmed wire delivery.
+                    record.transmissions.append(
+                        {"transport": transport, "sent_s": sent - anchor, "wire_bytes": len(wire)}
+                    )
+                    if record.sent_s is None:
+                        record.sent_s = sent - anchor
+
                 if mode == "udp":
-                    response, sent = await _udp(host, udp_port, wire)
+                    response, sent = await _udp(host, udp_port, wire, on_send)
                 elif mode == "tcp":
-                    response, sent = await _tcp(host, tcp_port, wire)
+                    response, sent = await _tcp(host, tcp_port, wire, on_send)
                 else:
                     assert pool is not None
-                    response, sent = await pool.query(wire, deadline)
-                if record.sent_s is None:
-                    record.sent_s = sent - anchor
+                    response, sent = await pool.query(wire, deadline, on_send)
                 record.raw_responses.append(response)
                 attempt = {
                     "transport": mode,
@@ -251,6 +281,7 @@ async def run_load(
     utc_anchor: float | None = None,
     arrival_mode: str = "poisson",
     popularity: str = "uniform",
+    tcp_pool: ReusedTCP | None = None,
 ) -> dict:
     """Run a bounded measurement. output=None performs a real query warmup."""
     if rate <= 0 or duration_s <= 0 or max_inflight <= 0 or not names:
@@ -273,7 +304,11 @@ async def run_load(
     anchor = time.monotonic() if anchor is None else anchor
     utc_anchor = time.time() if utc_anchor is None else utc_anchor
     queue: asyncio.Queue[QueryRecord | None] = asyncio.Queue(maxsize=max_inflight * 2)
-    pool = ReusedTCP(host, tcp_port, tcp_connections) if policy == "reused_tcp" else None
+    if tcp_pool is not None and policy != "reused_tcp":
+        raise ValueError("A shared TCP pool requires reused_tcp policy")
+    pool = tcp_pool or (
+        ReusedTCP(host, tcp_port, tcp_connections) if policy == "reused_tcp" else None
+    )
     counts: Counter[str] = Counter()
     files = None
     if output is not None:
@@ -359,7 +394,7 @@ async def run_load(
             await queue.put(None)
             await writer_task
     finally:
-        if pool is not None:
+        if pool is not None and tcp_pool is None:
             await pool.close()
         for task in running:
             task.cancel()

@@ -11,7 +11,9 @@ import struct
 from collections import Counter
 from pathlib import Path
 
+from .freshness import Freshness, ideal_cache_rates, interaction_contrasts
 from .metrics import measurement_window, validate_window, window_elapsed
+from .resources import summarize_host
 
 
 def _rows(path: Path):
@@ -59,11 +61,26 @@ def _visibility(run_dir: Path, observations: dict[str, list[dict]], require_veri
     path = run_dir / "updates.jsonl"
     if not path.exists():
         return {}
-    events = [json.loads(line) for line in path.read_text().splitlines()]
+    events = [
+        e
+        for line in path.read_text().splitlines()
+        if (e := json.loads(line)).get("dispatched", True)
+    ]
     acknowledged = [e for e in events if e.get("error") is None]
     duration = json.loads((run_dir / "load.json").read_text())["duration_s"]
     visible_delays = []
     stale = post_ack_observations = censored = newer = unexpected = 0
+    version_events = list(events)
+    warm_path = run_dir / "warmup/updates.jsonl"
+    if warm_path.exists():
+        version_events.extend(
+            e
+            for line in warm_path.read_text().splitlines()
+            if (e := json.loads(line)).get("dispatched", True)
+        )
+    versions_by_name = {}
+    for event in version_events:
+        versions_by_name.setdefault(event["name"], {})[event["expected_a"]] = event["version"]
     for index, event in enumerate(events):
         if event.get("error") is not None:
             continue
@@ -79,7 +96,7 @@ def _visibility(run_dir: Path, observations: dict[str, list[dict]], require_veri
                 duration,
             ),
         )
-        versions = {e["expected_a"]: e["version"] for e in events if e["name"] == event["name"]}
+        versions = versions_by_name[event["name"]]
         versions[f"10.250.{event['index'] % 250}.1"] = 0
         completions = []
         for row in observations.get(event["name"], []):
@@ -126,8 +143,40 @@ def summarize_run(run_dir: Path) -> dict:
     frame_path = run_dir / "responses.bin.gz"
     if not query_path.exists() or not frame_path.exists():
         raise ValueError(f"Missing response artifacts in {run_dir}")
+    events_path = run_dir / "updates.jsonl"
+    events = (
+        [json.loads(line) for line in events_path.read_text().splitlines()]
+        if events_path.exists()
+        else []
+    )
+    initial_path = run_dir / "initial_state.json"
+    readiness_path = run_dir / "readiness.json"
+    if initial_path.exists():
+        initial = json.loads(initial_path.read_text())
+    elif readiness_path.exists():
+        initial = {
+            name: {"address": addresses[0], "version": 0}
+            for name, addresses in json.loads(readiness_path.read_text()).items()
+            if len(addresses) == 1
+        }
+    else:
+        initial = {}
+    warm_events = []
+    warm_path = run_dir / "warmup/updates.jsonl"
+    if warm_path.exists():
+        offset = json.loads((run_dir / "warmup_timing.json").read_text())[
+            "warmup_to_measurement_offset_s"
+        ]
+        for line in warm_path.read_text().splitlines():
+            event = json.loads(line)
+            if event.get("dispatched", True):
+                for field in ("planned_s", "requested_s", "acknowledged_s"):
+                    event[field] += offset
+                warm_events.append(event)
+    freshness = Freshness(initial, warm_events + events, config["algorithm_id"] != 0)
     statuses: Counter[str] = Counter()
     latencies, lags, wire_latencies = [], [], []
+    admission_lags, send_waits = [], []
     ids, expected_frames = set(), 0
     verification_path = run_dir / "verification.jsonl"
     if config["algorithm_id"] != 0 and not verification_path.exists():
@@ -141,60 +190,76 @@ def summarize_run(run_dir: Path) -> dict:
     observations: dict[str, list[dict]] = {}
     signing_keys: Counter[tuple[str, tuple[str, ...]]] = Counter()
     dns_transactions = 0
+    dns_transmissions = 0
+    transmission_accounting_complete = True
     udp_wire_bytes = []
     tcp_wire_bytes = []
     frames = iter(_frames(frame_path))
     frame_count = 0
-    for row in _rows(query_path):
-        query_id = row["query_id"]
-        if query_id in ids:
-            raise ValueError(f"Duplicate query ID in {run_dir}")
-        ids.add(query_id)
-        statuses[row["status"]] += 1
-        observations.setdefault(row["fqdn"], []).append(row)
-        dns_transactions += len(row["attempts"])
-        if row["answer_a"]:
-            signing_keys[(row["fqdn"], tuple(row["answer_a"]))] += len(row["attempts"])
-        if verification_rows is not None:
-            try:
-                verification = json.loads(next(verification_rows))
-            except StopIteration as exc:
-                raise ValueError(f"Missing verification row in {run_dir}") from exc
-            if verification["query_id"] != query_id:
-                raise ValueError(f"Verification order mismatch in {run_dir}")
-            row["_verification"] = verification["verification"]
-            if verification["verification"] == "private_zone_signature_verified":
-                verified_count += 1
-                verified_latencies.append(row["latency_ms"])
-                if row["completed_s"] <= load["duration_s"]:
-                    verified_within_window += 1
-        if row["attempts"]:
-            final_wire_bytes.append(row["attempts"][-1]["wire_bytes"])
-        if any(a["transport"] == "tcp" for a in row["attempts"]) and any(
-            a["transport"] == "udp" for a in row["attempts"]
-        ):
-            fallback_count += 1
-        expected_frames += len(row["attempts"])
-        for index, attempt in enumerate(row["attempts"]):
-            try:
-                frame_id, frame_attempt, payload = next(frames)
-            except StopIteration as exc:
-                raise ValueError(f"Missing response frame in {run_dir}") from exc
-            if (frame_id, frame_attempt, len(payload)) != (query_id, index, attempt["wire_bytes"]):
-                raise ValueError(f"Response frame accounting mismatch in {run_dir}")
-            frame_count += 1
-            (udp_wire_bytes if attempt["transport"] == "udp" else tcp_wire_bytes).append(
-                len(payload)
-            )
-        if row["status"] == "positive_unverified":
-            latencies.append(row["latency_ms"])
-            if (
-                verification_rows is None
-                or row.get("_verification") == "private_zone_signature_verified"
+    with gzip.open(run_dir / "freshness.jsonl.gz", "wt") as freshness_file:
+        for row in _rows(query_path):
+            query_id = row["query_id"]
+            if query_id in ids:
+                raise ValueError(f"Duplicate query ID in {run_dir}")
+            ids.add(query_id)
+            statuses[row["status"]] += 1
+            observations.setdefault(row["fqdn"], []).append(row)
+            dns_transactions += len(row["attempts"])
+            if "transmissions" in row:
+                dns_transmissions += len(row["transmissions"])
+            else:
+                transmission_accounting_complete = False
+            if row["answer_a"]:
+                signing_keys[(row["fqdn"], tuple(row["answer_a"]))] += len(row["attempts"])
+            if verification_rows is not None:
+                try:
+                    verification = json.loads(next(verification_rows))
+                except StopIteration as exc:
+                    raise ValueError(f"Missing verification row in {run_dir}") from exc
+                if verification["query_id"] != query_id:
+                    raise ValueError(f"Verification order mismatch in {run_dir}")
+                row["_verification"] = verification["verification"]
+                if verification["verification"] == "private_zone_signature_verified":
+                    verified_count += 1
+                    verified_latencies.append(row["latency_ms"])
+                    if row["completed_s"] <= load["duration_s"]:
+                        verified_within_window += 1
+            freshness_file.write(json.dumps(freshness.observe(row), separators=(",", ":")) + "\n")
+            if row["attempts"]:
+                final_wire_bytes.append(row["attempts"][-1]["wire_bytes"])
+            if any(a["transport"] == "tcp" for a in row["attempts"]) and any(
+                a["transport"] == "udp" for a in row["attempts"]
             ):
-                wire_latencies.append(row["wire_latency_ms"])
-        if row["dispatch_lag_ms"] is not None:
-            lags.append(row["dispatch_lag_ms"])
+                fallback_count += 1
+            expected_frames += len(row["attempts"])
+            for index, attempt in enumerate(row["attempts"]):
+                try:
+                    frame_id, frame_attempt, payload = next(frames)
+                except StopIteration as exc:
+                    raise ValueError(f"Missing response frame in {run_dir}") from exc
+                if (frame_id, frame_attempt, len(payload)) != (
+                    query_id,
+                    index,
+                    attempt["wire_bytes"],
+                ):
+                    raise ValueError(f"Response frame accounting mismatch in {run_dir}")
+                frame_count += 1
+                (udp_wire_bytes if attempt["transport"] == "udp" else tcp_wire_bytes).append(
+                    len(payload)
+                )
+            if row["status"] == "positive_unverified":
+                latencies.append(row["latency_ms"])
+                if (
+                    verification_rows is None
+                    or row.get("_verification") == "private_zone_signature_verified"
+                ):
+                    wire_latencies.append(row["wire_latency_ms"])
+            if row.get("admitted_s") is not None:
+                admission_lags.append((row["admitted_s"] - row["planned_s"]) * 1000)
+                if row.get("sent_s") is not None:
+                    send_waits.append((row["sent_s"] - row["admitted_s"]) * 1000)
+            if row["dispatch_lag_ms"] is not None:
+                lags.append(row["dispatch_lag_ms"])
     if verification_rows is not None:
         try:
             next(verification_rows)
@@ -207,14 +272,25 @@ def summarize_run(run_dir: Path) -> dict:
         raise ValueError(f"Extra response frames in {run_dir}")
     samples: list[dict] = []
     metrics_path = run_dir / "metrics.jsonl"
-    if not metrics_path.exists():
-        raise ValueError(f"Missing metric samples in {run_dir}")
-    validate_window(metrics_path, load["duration_s"], config.get("replicas", 1))
-    samples = [json.loads(line) for line in metrics_path.open()]
+    metrics_valid, metrics_error = True, None
+    try:
+        validate_window(
+            metrics_path,
+            load["duration_s"],
+            config.get("replicas", 1),
+            config.get("sampling_interval_s", 1.0),
+        )
+    except (RuntimeError, ValueError, OSError) as exc:
+        metrics_valid, metrics_error = False, str(exc)
+    samples = [json.loads(line) for line in metrics_path.open()] if metrics_path.exists() else []
     by_pod: dict[str, list[dict]] = {}
     for sample in samples:
         by_pod.setdefault(sample["uid"], []).append(sample)
-    cpu_seconds = [_metric_delta(s, "process_cpu_seconds_total") for s in by_pod.values()]
+    cpu_seconds = (
+        [_metric_delta(s, "process_cpu_seconds_total") for s in by_pod.values()]
+        if metrics_valid
+        else []
+    )
     cpu_total = (
         sum(x[0] for x in cpu_seconds)
         if cpu_seconds and all(x is not None for x in cpu_seconds)
@@ -231,6 +307,8 @@ def summarize_run(run_dir: Path) -> dict:
     sign_total = sum(x[0] for x in sign_total) if sign_interval is not None else None
 
     def counter(prefix: str) -> float | None:
+        if not metrics_valid:
+            return None
         deltas = [_metric_delta(pod_samples, prefix) for pod_samples in by_pod.values()]
         return sum(x[0] for x in deltas) if deltas and all(x is not None for x in deltas) else None
 
@@ -305,9 +383,90 @@ def summarize_run(run_dir: Path) -> dict:
         ]
         if rss_values:
             rss_peak = max(rss_values)
+
+    def inflight_at(phase: str) -> float | None:
+        values = []
+        for rows in by_pod.values():
+            sample = next((row for row in reversed(rows) if row["phase"] == phase), {})
+            value = sample.get("series", {}).get("coredns_dnssec_pqc_sign_inflight")
+            if value is None:
+                return None
+            values.append(value)
+        return sum(values) if values else None
+
+    ideal_signs = ideal_stale = None
+    names = config.get("names")
+    if (
+        names
+        and config.get("signature_cache_capacity", 0) > 0
+        and config.get("arrival_mode", "poisson") == "poisson"
+        and config.get("popularity", "uniform") == "uniform"
+        and config["transport_policy"] in {"reused_tcp", "fresh_tcp"}
+        and config["algorithm_id"] != 0
+    ):
+        ideal = ideal_cache_rates(
+            config["query_rate"] / names,
+            config["update_rate"] / names,
+            config["response_cache_ttl"],
+        )
+        ideal_signs, ideal_stale = names * ideal["signs_per_s"], ideal["stale_fraction"]
+
     return {
         **_visibility(run_dir, observations, verification_rows is not None),
+        **freshness.summary(),
+        **summarize_host(run_dir / "host_metrics.jsonl"),
+        "signing_inflight_start": inflight_at("measurement_start"),
+        "signing_inflight_end": inflight_at("measurement_end"),
+        "signing_inflight_after_client_drain": inflight_at("post_drain"),
+        "ideal_signs_per_s": ideal_signs,
+        "ideal_stale_fraction": ideal_stale,
+        **{
+            field: config.get(field)
+            for field in (
+                "query_seed",
+                "update_seed",
+                "timeout_s",
+                "max_inflight",
+                "tcp_connections",
+                "dynamic_warmup",
+                "memory_limit",
+            )
+        },
+        "names": config.get("names"),
+        "replicas": config.get("replicas", 1),
+        "kubernetes_ttl": config.get("kubernetes_ttl"),
+        "warmup_s": config.get("warmup_s"),
+        "sampling_interval_s": config.get("sampling_interval_s", 1.0),
+        "query_rate_configured": config.get("query_rate"),
+        "update_rate_configured": config.get("update_rate"),
+        "response_cache_ttl": config.get("response_cache_ttl"),
+        "signature_cache_capacity": config.get("signature_cache_capacity"),
+        "cpu_limit": config.get("cpu_limit"),
+        "arrival_mode": config.get("arrival_mode", "poisson"),
+        "popularity": config.get("popularity", "uniform"),
+        "signature_cache_evictions": counter("coredns_dnssec_pqc_cache_evictions_total"),
+        "update_request_lag_p95_ms": _percentile(
+            [
+                (e["requested_s"] - e["planned_s"]) * 1000
+                for e in events
+                if e.get("dispatched", True)
+            ],
+            0.95,
+        ),
+        "update_api_p95_ms": _percentile(
+            [
+                (e["acknowledged_s"] - e["requested_s"]) * 1000
+                for e in events
+                if e.get("dispatched", True) and e.get("error") is None
+            ],
+            0.95,
+        ),
+        "update_deadline_missed": sum(not event.get("dispatched", True) for event in events),
+        "update_errors": sum(
+            event.get("dispatched", True) and event.get("error") is not None for event in events
+        ),
         "run": str(run_dir),
+        "study": config.get("study", "revision_sensitivity"),
         "cell_id": config["cell_id"],
         "repetition": config["repetition"],
         "algorithm": config["algorithm"],
@@ -343,10 +502,17 @@ def summarize_run(run_dir: Path) -> dict:
         "wire_p50_ms": _percentile(wire_latencies, 0.5),
         "wire_p99_ms": _percentile(wire_latencies, 0.99),
         "dispatch_p99_ms": _percentile(lags, 0.99),
+        "admission_p99_ms": _percentile(admission_lags, 0.99),
+        "send_wait_p99_ms": _percentile(send_waits, 0.99),
+        "queries_with_admission_timestamp": len(admission_lags),
         "cpu_cores": sum(x[0] / x[1] for x in cpu_seconds) if cpu_total is not None else None,
+        "cpu_metrics_valid": metrics_valid,
+        "cpu_metrics_error": metrics_error,
         "cpu_window_source": ";".join(
             sorted({measurement_window(rows)[2] for rows in by_pod.values()})
-        ),
+        )
+        if metrics_valid
+        else "invalid",
         "cpu_window_min_s": min((x[1] for x in cpu_seconds if x is not None), default=None),
         "signs_per_s": sum(
             delta[0] / delta[1]
@@ -354,7 +520,7 @@ def summarize_run(run_dir: Path) -> dict:
             if (delta := _metric_delta(rows, "coredns_dnssec_pqc_singleflight_execs_total"))
             is not None
         )
-        if sign_total is not None
+        if sign_total is not None and metrics_valid
         else (0.0 if config["algorithm_id"] == 0 else None),
         "signature_cache_hits": hits,
         "signature_cache_misses": misses,
@@ -367,14 +533,21 @@ def summarize_run(run_dir: Path) -> dict:
         if coalesced is not None and sign_total is not None and coalesced + sign_total > 0
         else None,
         "sign_wall_mean_ms": mean_sign_wall_s * 1000 if mean_sign_wall_s is not None else None,
+        # Legacy field counts received DNS messages, including truncated replies.
         "dns_transactions": dns_transactions,
+        "received_dns_responses": dns_transactions,
+        "dns_transmissions": dns_transmissions if transmission_accounting_complete else None,
+        "queries_with_send_timestamp": len(lags),
+        "send_timestamp_scope": "client_write_attempt"
+        if transmission_accounting_complete
+        else "requests_with_received_response_only",
         "approximate_content_keys": len(signing_keys),
         "metrics_pods": len(by_pod),
         "frames": frame_count,
         "statuses": dict(statuses),
         "validation": "private_zone_signature_checked"
         if verification_rows is not None
-        else "cryptographic_verification_pending",
+        else "unsigned_control",
     }
 
 
@@ -397,12 +570,20 @@ def report(campaign: Path) -> list[dict]:
     figures = campaign / "figures"
     tables.mkdir(exist_ok=True)
     figures.mkdir(exist_ok=True)
-    columns = [k for k in summaries[0] if k != "statuses"]
+    columns = list(dict.fromkeys(k for row in summaries for k in row if k != "statuses"))
     with (tables / "run_summaries.csv").open("w", newline="") as file:
         writer = csv.DictWriter(file, fieldnames=columns)
         writer.writeheader()
         for row in summaries:
-            writer.writerow({k: row[k] for k in columns})
+            writer.writerow({k: row.get(k) for k in columns})
+    contrasts = interaction_contrasts(summaries)
+    if contrasts:
+        with (tables / "interaction_contrasts.csv").open("w", newline="") as file:
+            writer = csv.DictWriter(
+                file, fieldnames=list(dict.fromkeys(k for row in contrasts for k in row))
+            )
+            writer.writeheader()
+            writer.writerows(contrasts)
     (tables / "outcomes.json").write_text(
         json.dumps({row["run"]: row["statuses"] for row in summaries}, indent=2)
     )
@@ -414,6 +595,25 @@ def report(campaign: Path) -> list[dict]:
         cell_rows.append(
             {
                 "cell_id": cell_id,
+                "fresh_fraction_median": _median_field(runs, "fresh_fraction"),
+                "stale_fraction_median": _median_field(runs, "stale_fraction"),
+                "fresh_on_time_50ms_median": _median_field(runs, "fresh_on_time_50ms"),
+                "fresh_on_time_50ms_min": min(
+                    (
+                        row["fresh_on_time_50ms"]
+                        for row in runs
+                        if row["fresh_on_time_50ms"] is not None
+                    ),
+                    default=None,
+                ),
+                "fresh_on_time_50ms_max": max(
+                    (
+                        row["fresh_on_time_50ms"]
+                        for row in runs
+                        if row["fresh_on_time_50ms"] is not None
+                    ),
+                    default=None,
+                ),
                 "repetitions_complete": len(runs),
                 "offered_qps_median": _median_field(runs, "offered_qps"),
                 "dispatch_p99_ms_median": _median_field(runs, "dispatch_p99_ms"),
@@ -421,7 +621,7 @@ def report(campaign: Path) -> list[dict]:
                 "verified_fraction_median": statistics.median(
                     [row["verified_positive"] / row["offered"] for row in runs]
                 )
-                if all(row["verified_positive"] is not None for row in runs)
+                if all(row["verified_positive"] is not None and row["offered"] > 0 for row in runs)
                 else None,
                 "p99_ms_median": _median_field(runs, "p99_ms"),
                 "wire_p99_ms_median": _median_field(runs, "wire_p99_ms"),
@@ -450,17 +650,23 @@ def report(campaign: Path) -> list[dict]:
         "",
         f"Complete runs: {len(summaries)}.",
         "",
-        "Private zone signature verification status is recorded per run. Negative proofs are not validated.",
+        "Signed positive answers are verified offline; deadlines exclude validation time. Freshness is relative to API acknowledgments at answer completion. All offered queries remain in the denominator. Unknown update states give lower/upper success bounds in the CSV. 50 ms is a reporting threshold, not a production SLO. Negative proofs are not validated.",
         "",
-        "| Cell | Rep | Offered | Verified | Failure or unknown | P99 ms | CPU cores |",
-        "|---|---:|---:|---:|---:|---:|---:|",
+        "| Cell | Rep | Offered | Verified | Failure or unknown | Fresh within 50 ms (%) | Stale (%) | Freshness unknown | P99 ms | CPU cores |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for row in summaries:
         p99 = f"{row['p99_ms']:.2f}" if row["p99_ms"] is not None else "n/a"
         cpu = f"{row['cpu_cores']:.3f}" if row["cpu_cores"] is not None else "n/a"
+        fresh = (
+            f"{100 * row['fresh_on_time_50ms']:.2f}"
+            if row["fresh_on_time_50ms"] is not None
+            else "n/a"
+        )
+        stale = f"{100 * row['stale_fraction']:.2f}" if row["stale_fraction"] is not None else "n/a"
         lines.append(
             f"| {row['cell_id']} | {row['repetition']} | {row['offered']} | "
-            f"{row['verified_positive'] if row['verified_positive'] is not None else 'n/a'} | {row['failure_or_unknown']} | {p99} | {cpu} |"
+            f"{row['verified_positive'] if row['verified_positive'] is not None else 'n/a'} | {row['failure_or_unknown']} | {fresh} | {stale} | {row['freshness_unknown']} | {p99} | {cpu} |"
         )
     (campaign / "report.md").write_text("\n".join(lines) + "\n")
     return summaries

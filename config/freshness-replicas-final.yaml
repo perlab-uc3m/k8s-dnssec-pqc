@@ -1,0 +1,83 @@
+# Compare one and two pods at the same total quota, then increase total quota; same host.
+schema_version: 1
+campaign_id: freshness-replicas-final
+study: algorithm_freshness_interaction
+context: kind-pqc-dnssec-revision
+namespace: bench
+domain: cluster.local
+repetitions: 3
+cell_order: randomized
+warmup_s: 20
+measurement_s: 120
+dynamic_warmup: true
+require_ownership_fix: true
+query_rate: 100
+update_rate: 16
+names: 32
+sig_cache_cap: 9984
+response_cache_ttl: 0
+record_ttl: 5
+cpu_limit: '0.5'
+memory_limit: 512Mi
+transport_policy: reused_tcp
+arrival_mode: poisson
+popularity: uniform
+max_inflight: 128
+tcp_connections: 64
+timeout_s: 2.0
+seed: 20261001
+cells:
+- id: ed25519-1pods-0.5core
+  algorithm: ED25519
+  algorithm_id: 15
+  algorithm_type: classical
+  replicas: 1
+  cpu_limit: '0.5'
+- id: ed25519-2pods-0.25core
+  algorithm: ED25519
+  algorithm_id: 15
+  algorithm_type: classical
+  replicas: 2
+  cpu_limit: '0.25'
+- id: ed25519-2pods-0.5core
+  algorithm: ED25519
+  algorithm_id: 15
+  algorithm_type: classical
+  replicas: 2
+  cpu_limit: '0.5'
+- id: mldsa44-1pods-0.5core
+  algorithm: ML-DSA-44
+  algorithm_id: 18
+  algorithm_type: pqc
+  replicas: 1
+  cpu_limit: '0.5'
+- id: mldsa44-2pods-0.25core
+  algorithm: ML-DSA-44
+  algorithm_id: 18
+  algorithm_type: pqc
+  replicas: 2
+  cpu_limit: '0.25'
+- id: mldsa44-2pods-0.5core
+  algorithm: ML-DSA-44
+  algorithm_id: 18
+  algorithm_type: pqc
+  replicas: 2
+  cpu_limit: '0.5'
+- id: falcon512-1pods-0.5core
+  algorithm: Falcon-512
+  algorithm_id: 17
+  algorithm_type: pqc
+  replicas: 1
+  cpu_limit: '0.5'
+- id: falcon512-2pods-0.25core
+  algorithm: Falcon-512
+  algorithm_id: 17
+  algorithm_type: pqc
+  replicas: 2
+  cpu_limit: '0.25'
+- id: falcon512-2pods-0.5core
+  algorithm: Falcon-512
+  algorithm_id: 17
+  algorithm_type: pqc
+  replicas: 2
+  cpu_limit: '0.5'

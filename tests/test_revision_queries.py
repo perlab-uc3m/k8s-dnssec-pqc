@@ -213,3 +213,113 @@ def test_writer_failure_cancels_load(tmp_path, monkeypatch):
             udp.close()
 
     asyncio.run(scenario())
+
+
+def test_tcp_pool_survives_warmup(tmp_path):
+    from src.revision.queries import ReusedTCP
+
+    async def scenario():
+        connections = 0
+
+        async def reply(reader, writer):
+            nonlocal connections
+            connections += 1
+            try:
+                while True:
+                    length = struct.unpack(">H", await reader.readexactly(2))[0]
+                    query = dns.message.from_wire(await reader.readexactly(length))
+                    response = dns.message.make_response(query)
+                    response.answer.append(
+                        dns.rrset.from_text(
+                            query.question[0].name.to_text(), 5, "IN", "A", "10.1.1.1"
+                        )
+                    )
+                    wire = response.to_wire()
+                    writer.write(struct.pack(">H", len(wire)) + wire)
+                    await writer.drain()
+            except asyncio.IncompleteReadError:
+                pass
+            finally:
+                writer.close()
+
+        server = await asyncio.start_server(reply, "127.0.0.1", 0)
+        pool = ReusedTCP("127.0.0.1", server.sockets[0].getsockname()[1], 1)
+        try:
+            for output in (None, tmp_path):
+                result = await run_load(
+                    output,
+                    "127.0.0.1",
+                    0,
+                    pool.port,
+                    ["a.bench.svc.cluster.local."],
+                    60,
+                    0.15,
+                    7,
+                    policy="reused_tcp",
+                    tcp_pool=pool,
+                )
+                assert result["offered"] > 0
+                assert result["counts"] == {"positive_unverified": result["offered"]}
+            assert connections == 1
+            rows = [json.loads(line) for line in gzip.open(tmp_path / "queries.jsonl.gz", "rt")]
+            assert all(row["answer_ttls"] == [5] for row in rows)
+        finally:
+            await pool.close()
+            server.close()
+            await server.wait_closed()
+
+    asyncio.run(scenario())
+
+
+def test_timeout_retains_send_without_received_frame():
+    import time
+
+    from src.revision.queries import QueryRecord, ReusedTCP, _one
+
+    async def scenario(policy):
+        received = asyncio.Event()
+        closed = asyncio.Event()
+
+        async def silent(reader, writer):
+            try:
+                length = struct.unpack(">H", await reader.readexactly(2))[0]
+                await reader.readexactly(length)
+                received.set()
+                await reader.read()  # Accept the query but never send a response.
+            finally:
+                writer.close()
+                await writer.wait_closed()
+                closed.set()
+
+        server = await asyncio.start_server(silent, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        pool = ReusedTCP("127.0.0.1", port, 1)
+        try:
+            record = await _one(
+                QueryRecord(1, "a.bench.svc.cluster.local.", 0),
+                time.monotonic(),
+                "127.0.0.1",
+                0,
+                port,
+                policy,
+                0.1,
+                pool,
+            )
+            assert received.is_set()
+            assert record.status == "timeout"
+            assert record.sent_s is not None
+            assert record.dispatch_lag_ms >= 0
+            assert record.wire_latency_ms > 0
+            assert len(record.transmissions) == 1
+            assert record.transmissions[0]["transport"] in ("tcp", "reused_tcp")
+            assert record.transmissions[0]["sent_s"] == record.sent_s
+            assert record.attempts == []
+            assert record.raw_responses == []
+            await asyncio.wait_for(closed.wait(), 1)
+        finally:
+            await pool.close()
+            server.close()
+            await server.wait_closed()
+
+    for policy in ("fresh_tcp", "reused_tcp"):
+        asyncio.run(scenario(policy))

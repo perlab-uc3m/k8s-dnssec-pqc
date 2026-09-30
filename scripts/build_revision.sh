@@ -53,6 +53,12 @@ case "${BENCH_SIGNATURE_OWNERSHIP_FIX:-1}" in
         ;;
     *) echo "BENCH_SIGNATURE_OWNERSHIP_FIX must be 0 or 1" >&2; exit 1 ;;
 esac
+eviction_patch="$repo_dir/patches/plugin-cache-evictions.patch"
+if git -C "$build_dir/dnssec_pqc_plugin" apply --check "$eviction_patch" 2>/dev/null; then
+    git -C "$build_dir/dnssec_pqc_plugin" apply "$eviction_patch"
+else
+    git -C "$build_dir/dnssec_pqc_plugin" apply --reverse --check "$eviction_patch"
+fi
 if [ ! -f "$build_dir/local/lib/liboqs.so" ]; then
     cmake -S "$build_dir/liboqs" -B "$build_dir/liboqs/out" -G Ninja \
         -DCMAKE_INSTALL_PREFIX="$build_dir/local" \
@@ -92,7 +98,7 @@ PLUGINS
         -replace "github.com/qursa-uc3m/dnssec_pqc_plugin=$build_dir/dnssec_pqc_plugin" \
         -require "github.com/qursa-uc3m/dnssec_pqc_plugin@v0.1.1"
     go run directives_generate.go
-    CGO_ENABLED=1 go test github.com/qursa-uc3m/dnssec_pqc_plugin -run 'TestSigningFailureReturnsSERVFAIL|TestSignatureResponseOwnership' -count=1
+    CGO_ENABLED=1 go test github.com/qursa-uc3m/dnssec_pqc_plugin -run 'TestSigningFailureReturnsSERVFAIL|TestSignatureResponseOwnership|TestSignatureCacheEvictionCounter' -count=1
     CGO_ENABLED=1 go build -o "$build_dir/coredns-pqc"
 )
 cd "$build_dir/dns"

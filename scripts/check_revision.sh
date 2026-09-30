@@ -21,4 +21,4 @@ if [ -n "$(gofmt -l tools/keygen_ed/main.go tools/verify/main.go)" ]; then
     exit 1
 fi
 bash -n bench scripts/bootstrap_revision.sh scripts/build_revision.sh \
-    scripts/setup_revision_cluster.sh scripts/deploy_coredns.sh
+    scripts/setup_revision_cluster.sh scripts/deploy_coredns.sh scripts/run_final_campaigns.sh

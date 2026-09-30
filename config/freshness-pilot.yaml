@@ -1,0 +1,146 @@
+# Exploratory only. Freeze the main design after the pilot; do not pool these runs with it.
+schema_version: 1
+campaign_id: freshness-pilot
+study: algorithm_freshness_interaction
+context: kind-pqc-dnssec-revision
+namespace: bench
+domain: cluster.local
+repetitions: 1
+cell_order: randomized
+warmup_s: 20
+measurement_s: 40
+dynamic_warmup: true
+require_ownership_fix: true
+query_rate: 100
+update_rate: 16
+names: 32
+sig_cache_cap: 9984
+response_cache_ttl: 0
+record_ttl: 5
+cpu_limit: '0.5'
+memory_limit: 512Mi
+transport_policy: reused_tcp
+arrival_mode: poisson
+popularity: uniform
+max_inflight: 128
+tcp_connections: 64
+timeout_s: 2.0
+seed: 20260930
+cells:
+- id: ed25519-u0-ttl0
+  algorithm: ED25519
+  algorithm_id: 15
+  algorithm_type: classical
+  update_rate: 0
+  response_cache_ttl: 0
+- id: ed25519-u0-ttl5
+  algorithm: ED25519
+  algorithm_id: 15
+  algorithm_type: classical
+  update_rate: 0
+  response_cache_ttl: 5
+- id: ed25519-u16-ttl0
+  algorithm: ED25519
+  algorithm_id: 15
+  algorithm_type: classical
+  update_rate: 16
+  response_cache_ttl: 0
+- id: ed25519-u16-ttl5
+  algorithm: ED25519
+  algorithm_id: 15
+  algorithm_type: classical
+  update_rate: 16
+  response_cache_ttl: 5
+- id: mldsa44-u0-ttl0
+  algorithm: ML-DSA-44
+  algorithm_id: 18
+  algorithm_type: pqc
+  update_rate: 0
+  response_cache_ttl: 0
+- id: mldsa44-u0-ttl5
+  algorithm: ML-DSA-44
+  algorithm_id: 18
+  algorithm_type: pqc
+  update_rate: 0
+  response_cache_ttl: 5
+- id: mldsa44-u16-ttl0
+  algorithm: ML-DSA-44
+  algorithm_id: 18
+  algorithm_type: pqc
+  update_rate: 16
+  response_cache_ttl: 0
+- id: mldsa44-u16-ttl5
+  algorithm: ML-DSA-44
+  algorithm_id: 18
+  algorithm_type: pqc
+  update_rate: 16
+  response_cache_ttl: 5
+- id: falcon512-u0-ttl0
+  algorithm: Falcon-512
+  algorithm_id: 17
+  algorithm_type: pqc
+  update_rate: 0
+  response_cache_ttl: 0
+- id: falcon512-u0-ttl5
+  algorithm: Falcon-512
+  algorithm_id: 17
+  algorithm_type: pqc
+  update_rate: 0
+  response_cache_ttl: 5
+- id: falcon512-u16-ttl0
+  algorithm: Falcon-512
+  algorithm_id: 17
+  algorithm_type: pqc
+  update_rate: 16
+  response_cache_ttl: 0
+- id: falcon512-u16-ttl5
+  algorithm: Falcon-512
+  algorithm_id: 17
+  algorithm_type: pqc
+  update_rate: 16
+  response_cache_ttl: 5
+- id: sphincs128s-u0-ttl0
+  algorithm: SPHINCS+-SHA2-128s-simple
+  algorithm_id: 19
+  algorithm_type: pqc
+  update_rate: 0
+  response_cache_ttl: 0
+- id: sphincs128s-u0-ttl5
+  algorithm: SPHINCS+-SHA2-128s-simple
+  algorithm_id: 19
+  algorithm_type: pqc
+  update_rate: 0
+  response_cache_ttl: 5
+- id: sphincs128s-u4-ttl0
+  algorithm: SPHINCS+-SHA2-128s-simple
+  algorithm_id: 19
+  algorithm_type: pqc
+  update_rate: 4
+  response_cache_ttl: 0
+- id: sphincs128s-u4-ttl5
+  algorithm: SPHINCS+-SHA2-128s-simple
+  algorithm_id: 19
+  algorithm_type: pqc
+  update_rate: 4
+  response_cache_ttl: 5
+- id: unsigned-client-headroom
+  algorithm: Baseline
+  algorithm_id: 0
+  algorithm_type: baseline
+  update_rate: 16
+  response_cache_ttl: 0
+  query_rate: 400
+- id: unsigned-static-control
+  algorithm: Baseline
+  algorithm_id: 0
+  algorithm_type: baseline
+  update_rate: 0
+  response_cache_ttl: 0
+- id: unsigned-observer-control
+  algorithm: Baseline
+  algorithm_id: 0
+  algorithm_type: baseline
+  update_rate: 16
+  response_cache_ttl: 0
+  query_rate: 400
+  sampling_interval_s: 0

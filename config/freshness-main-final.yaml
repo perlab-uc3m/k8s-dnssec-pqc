@@ -1,0 +1,281 @@
+# Repeated comparison with three independent repetitions and a fixed workload.
+schema_version: 1
+campaign_id: freshness-main-final
+study: algorithm_freshness_interaction
+context: kind-pqc-dnssec-revision
+namespace: bench
+domain: cluster.local
+repetitions: 3
+cell_order: randomized
+warmup_s: 20
+measurement_s: 120
+dynamic_warmup: true
+require_ownership_fix: true
+query_rate: 100
+update_rate: 16
+names: 32
+sig_cache_cap: 9984
+response_cache_ttl: 0
+record_ttl: 5
+cpu_limit: '0.5'
+memory_limit: 512Mi
+transport_policy: reused_tcp
+arrival_mode: poisson
+popularity: uniform
+max_inflight: 128
+tcp_connections: 64
+timeout_s: 2.0
+seed: 20261001
+cells:
+- id: ed25519-u0-ttl0-cpu0.5
+  algorithm: ED25519
+  algorithm_id: 15
+  algorithm_type: classical
+  update_rate: 0
+  response_cache_ttl: 0
+  cpu_limit: '0.5'
+- id: ed25519-u0-ttl1-cpu0.5
+  algorithm: ED25519
+  algorithm_id: 15
+  algorithm_type: classical
+  update_rate: 0
+  response_cache_ttl: 1
+  cpu_limit: '0.5'
+- id: ed25519-u0-ttl5-cpu0.5
+  algorithm: ED25519
+  algorithm_id: 15
+  algorithm_type: classical
+  update_rate: 0
+  response_cache_ttl: 5
+  cpu_limit: '0.5'
+- id: ed25519-u16-ttl0-cpu0.5
+  algorithm: ED25519
+  algorithm_id: 15
+  algorithm_type: classical
+  update_rate: 16
+  response_cache_ttl: 0
+  cpu_limit: '0.5'
+- id: ed25519-u16-ttl1-cpu0.5
+  algorithm: ED25519
+  algorithm_id: 15
+  algorithm_type: classical
+  update_rate: 16
+  response_cache_ttl: 1
+  cpu_limit: '0.5'
+- id: ed25519-u16-ttl5-cpu0.5
+  algorithm: ED25519
+  algorithm_id: 15
+  algorithm_type: classical
+  update_rate: 16
+  response_cache_ttl: 5
+  cpu_limit: '0.5'
+- id: mldsa44-u0-ttl0-cpu0.5
+  algorithm: ML-DSA-44
+  algorithm_id: 18
+  algorithm_type: pqc
+  update_rate: 0
+  response_cache_ttl: 0
+  cpu_limit: '0.5'
+- id: mldsa44-u0-ttl1-cpu0.5
+  algorithm: ML-DSA-44
+  algorithm_id: 18
+  algorithm_type: pqc
+  update_rate: 0
+  response_cache_ttl: 1
+  cpu_limit: '0.5'
+- id: mldsa44-u0-ttl5-cpu0.5
+  algorithm: ML-DSA-44
+  algorithm_id: 18
+  algorithm_type: pqc
+  update_rate: 0
+  response_cache_ttl: 5
+  cpu_limit: '0.5'
+- id: mldsa44-u16-ttl0-cpu0.5
+  algorithm: ML-DSA-44
+  algorithm_id: 18
+  algorithm_type: pqc
+  update_rate: 16
+  response_cache_ttl: 0
+  cpu_limit: '0.5'
+- id: mldsa44-u16-ttl1-cpu0.5
+  algorithm: ML-DSA-44
+  algorithm_id: 18
+  algorithm_type: pqc
+  update_rate: 16
+  response_cache_ttl: 1
+  cpu_limit: '0.5'
+- id: mldsa44-u16-ttl5-cpu0.5
+  algorithm: ML-DSA-44
+  algorithm_id: 18
+  algorithm_type: pqc
+  update_rate: 16
+  response_cache_ttl: 5
+  cpu_limit: '0.5'
+- id: falcon512-u0-ttl0-cpu0.5
+  algorithm: Falcon-512
+  algorithm_id: 17
+  algorithm_type: pqc
+  update_rate: 0
+  response_cache_ttl: 0
+  cpu_limit: '0.5'
+- id: falcon512-u0-ttl1-cpu0.5
+  algorithm: Falcon-512
+  algorithm_id: 17
+  algorithm_type: pqc
+  update_rate: 0
+  response_cache_ttl: 1
+  cpu_limit: '0.5'
+- id: falcon512-u0-ttl5-cpu0.5
+  algorithm: Falcon-512
+  algorithm_id: 17
+  algorithm_type: pqc
+  update_rate: 0
+  response_cache_ttl: 5
+  cpu_limit: '0.5'
+- id: falcon512-u16-ttl0-cpu0.5
+  algorithm: Falcon-512
+  algorithm_id: 17
+  algorithm_type: pqc
+  update_rate: 16
+  response_cache_ttl: 0
+  cpu_limit: '0.5'
+- id: falcon512-u16-ttl1-cpu0.5
+  algorithm: Falcon-512
+  algorithm_id: 17
+  algorithm_type: pqc
+  update_rate: 16
+  response_cache_ttl: 1
+  cpu_limit: '0.5'
+- id: falcon512-u16-ttl5-cpu0.5
+  algorithm: Falcon-512
+  algorithm_id: 17
+  algorithm_type: pqc
+  update_rate: 16
+  response_cache_ttl: 5
+  cpu_limit: '0.5'
+- id: ed25519-u0-ttl0-cpu0.125
+  algorithm: ED25519
+  algorithm_id: 15
+  algorithm_type: classical
+  update_rate: 0
+  response_cache_ttl: 0
+  cpu_limit: '0.125'
+- id: ed25519-u0-ttl1-cpu0.125
+  algorithm: ED25519
+  algorithm_id: 15
+  algorithm_type: classical
+  update_rate: 0
+  response_cache_ttl: 1
+  cpu_limit: '0.125'
+- id: ed25519-u0-ttl5-cpu0.125
+  algorithm: ED25519
+  algorithm_id: 15
+  algorithm_type: classical
+  update_rate: 0
+  response_cache_ttl: 5
+  cpu_limit: '0.125'
+- id: ed25519-u16-ttl0-cpu0.125
+  algorithm: ED25519
+  algorithm_id: 15
+  algorithm_type: classical
+  update_rate: 16
+  response_cache_ttl: 0
+  cpu_limit: '0.125'
+- id: ed25519-u16-ttl1-cpu0.125
+  algorithm: ED25519
+  algorithm_id: 15
+  algorithm_type: classical
+  update_rate: 16
+  response_cache_ttl: 1
+  cpu_limit: '0.125'
+- id: ed25519-u16-ttl5-cpu0.125
+  algorithm: ED25519
+  algorithm_id: 15
+  algorithm_type: classical
+  update_rate: 16
+  response_cache_ttl: 5
+  cpu_limit: '0.125'
+- id: mldsa44-u0-ttl0-cpu0.125
+  algorithm: ML-DSA-44
+  algorithm_id: 18
+  algorithm_type: pqc
+  update_rate: 0
+  response_cache_ttl: 0
+  cpu_limit: '0.125'
+- id: mldsa44-u0-ttl1-cpu0.125
+  algorithm: ML-DSA-44
+  algorithm_id: 18
+  algorithm_type: pqc
+  update_rate: 0
+  response_cache_ttl: 1
+  cpu_limit: '0.125'
+- id: mldsa44-u0-ttl5-cpu0.125
+  algorithm: ML-DSA-44
+  algorithm_id: 18
+  algorithm_type: pqc
+  update_rate: 0
+  response_cache_ttl: 5
+  cpu_limit: '0.125'
+- id: mldsa44-u16-ttl0-cpu0.125
+  algorithm: ML-DSA-44
+  algorithm_id: 18
+  algorithm_type: pqc
+  update_rate: 16
+  response_cache_ttl: 0
+  cpu_limit: '0.125'
+- id: mldsa44-u16-ttl1-cpu0.125
+  algorithm: ML-DSA-44
+  algorithm_id: 18
+  algorithm_type: pqc
+  update_rate: 16
+  response_cache_ttl: 1
+  cpu_limit: '0.125'
+- id: mldsa44-u16-ttl5-cpu0.125
+  algorithm: ML-DSA-44
+  algorithm_id: 18
+  algorithm_type: pqc
+  update_rate: 16
+  response_cache_ttl: 5
+  cpu_limit: '0.125'
+- id: falcon512-u0-ttl0-cpu0.125
+  algorithm: Falcon-512
+  algorithm_id: 17
+  algorithm_type: pqc
+  update_rate: 0
+  response_cache_ttl: 0
+  cpu_limit: '0.125'
+- id: falcon512-u0-ttl1-cpu0.125
+  algorithm: Falcon-512
+  algorithm_id: 17
+  algorithm_type: pqc
+  update_rate: 0
+  response_cache_ttl: 1
+  cpu_limit: '0.125'
+- id: falcon512-u0-ttl5-cpu0.125
+  algorithm: Falcon-512
+  algorithm_id: 17
+  algorithm_type: pqc
+  update_rate: 0
+  response_cache_ttl: 5
+  cpu_limit: '0.125'
+- id: falcon512-u16-ttl0-cpu0.125
+  algorithm: Falcon-512
+  algorithm_id: 17
+  algorithm_type: pqc
+  update_rate: 16
+  response_cache_ttl: 0
+  cpu_limit: '0.125'
+- id: falcon512-u16-ttl1-cpu0.125
+  algorithm: Falcon-512
+  algorithm_id: 17
+  algorithm_type: pqc
+  update_rate: 16
+  response_cache_ttl: 1
+  cpu_limit: '0.125'
+- id: falcon512-u16-ttl5-cpu0.125
+  algorithm: Falcon-512
+  algorithm_id: 17
+  algorithm_type: pqc
+  update_rate: 16
+  response_cache_ttl: 5
+  cpu_limit: '0.125'

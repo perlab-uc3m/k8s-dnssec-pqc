@@ -13,9 +13,9 @@ from kubernetes.client.exceptions import ApiException
 
 
 def endpoint_address(index: int, version: int) -> str:
-    if version >= 240:
+    if version < 0 or version >= 62500:
         raise ValueError("version space exhausted for one service")
-    return f"10.250.{index % 250}.{version + 1}"
+    return f"10.{250 - version // 250}.{index % 250}.{version % 250 + 1}"
 
 
 class HeadlessWorkload:
@@ -127,6 +127,7 @@ class HeadlessWorkload:
                     }
                 ]
             },
+            _request_timeout=(2, 5),
         )
         self.versions[index] = version
         return result.metadata.resource_version
@@ -137,22 +138,41 @@ class HeadlessWorkload:
         anchor: float,
         duration_s: float,
         rate: float,
+        seed: int | None = None,
     ) -> dict:
         """Start when called. Every acknowledged update has a versioned address."""
         if rate < 0:
             raise ValueError("negative update rate")
         planned = 0.0
-        count, errors = 0, 0
-        start = time.monotonic()
+        count, errors, missed, offered = 0, 0, 0, 0
+        rng = self.rng if seed is None else random.Random(seed)
         with (output / "updates.jsonl").open("w") as file:
             while rate:
-                planned += self.rng.expovariate(rate)
+                planned += rng.expovariate(rate)
                 if planned >= duration_s:
                     break
-                await asyncio.sleep(max(0.0, start + planned - time.monotonic()))
-                index = self.rng.randrange(self.count)
+                await asyncio.sleep(max(0.0, anchor + planned - time.monotonic()))
+                index = rng.randrange(self.count)
                 version = self.versions[index] + 1
                 requested = time.monotonic() - anchor
+                offered += 1
+                dispatched = requested < duration_s
+                if not dispatched:
+                    missed += 1
+                    file.write(
+                        json.dumps(
+                            {
+                                "name": self.fqdn(index),
+                                "planned_s": planned,
+                                "requested_s": requested,
+                                "dispatched": False,
+                                "error": "update_deadline_missed",
+                            }
+                        )
+                        + "\n"
+                    )
+                    continue
+                self.versions[index] = version
                 try:
                     resource_version = await asyncio.to_thread(
                         self._update,
@@ -170,7 +190,8 @@ class HeadlessWorkload:
                     "index": index,
                     "version": version,
                     "expected_a": endpoint_address(index, version),
-                    "planned_s": start - anchor + planned,
+                    "planned_s": planned,
+                    "dispatched": True,
                     "requested_s": requested,
                     "acknowledged_s": time.monotonic() - anchor,
                     "resource_version": resource_version,
@@ -178,7 +199,13 @@ class HeadlessWorkload:
                 }
                 file.write(json.dumps(doc) + "\n")
                 file.flush()
-        return {"acknowledged": count, "errors": errors, "rate_requested": rate}
+        return {
+            "acknowledged": count,
+            "errors": errors,
+            "offered": offered,
+            "deadline_missed": missed,
+            "rate_requested": rate,
+        }
 
     def cleanup(self) -> None:
         selector = "bench=pqc-revision"

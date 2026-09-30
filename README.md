@@ -1,6 +1,6 @@
 # PQC DNSSEC Kubernetes benchmark
 
-The revision benchmark runs on one Linux host. It builds a small CoreDNS image with the pinned DNSSEC plugin, creates one named Kind cluster, sends bounded DNS load, saves the received DNS messages, verifies signed positive answers, records per-pod CPU and memory, and generates tables and figures. The original `run.py` campaign remains in this repository for comparison, with its instructions in [docs/legacy-benchmark.md](docs/legacy-benchmark.md). Use `./bench` for the revised measurements.
+The revision benchmark runs on one Linux host. It builds a small CoreDNS image with the pinned DNSSEC plugin, creates one named Kind cluster, sends bounded DNS load, saves the received DNS messages, verifies signed positive answers, records per-pod CPU and memory, and generates tables and figures. The original `run.py` campaign remains in this repository for comparison, with its instructions in [docs/legacy-benchmark.md](docs/legacy-benchmark.md). Use `./bench` for the smoke check and `./bench final` for the complete repeated suite. The freshness campaign measures algorithm choice, caching and endpoint changes together; see [the run guide](docs/freshness-study.md). The saved `revision-*` campaigns remain a separate historical dataset.
 
 ## Run it
 
@@ -8,11 +8,13 @@ Prerequisites are Docker access, Go 1.26.0, CMake, Ninja, a C compiler, Python 3
 
 ```bash
 ./bench doctor
-./bench plan config/revision-smoke.yaml
-./bench reproduce config/revision-smoke.yaml
+./bench plan config/freshness-smoke.yaml
+BUILD_JOBS=1 ./bench reproduce config/freshness-smoke.yaml
 ```
 
-`reproduce` bootstraps pinned Python, Kind, and kubectl tools, builds liboqs and CoreDNS with two build jobs, creates the named `pqc-dnssec-revision` Kind context, runs the cells, verifies signed answers, and plots results. It can take several minutes on the first build. It uses ports 30053/UDP, 30054/TCP, and 30153/TCP. It does not replace the cluster's normal DNS deployment. The smoke file has two ten-second cells. The reviewer study has twelve cells, three repetitions, 30 seconds of measurement and five seconds of warmup per run:
+`reproduce` bootstraps pinned Python, Kind, and kubectl tools, builds liboqs and CoreDNS with two build jobs, creates the named `pqc-dnssec-revision` Kind context, runs the cells, verifies signed answers, and plots results. It can take several minutes on the first build. It uses ports 30053/UDP, 30054/TCP, and 30153/TCP. It does not replace the cluster's normal DNS deployment. The default smoke file has three ten-second cells and tests collection correctness. The complete campaign is launched with `./bench final` and documented in [the freshness run guide](docs/freshness-study.md).
+
+The original study has twelve cells, three repetitions, 30 seconds of measurement and five seconds of warmup per run:
 
 ```bash
 ./bench plan config/revision-study.yaml
@@ -33,7 +35,7 @@ The workload uses fixed selectorless headless Services and managed EndpointSlice
 
 Each run contains `config.json`, `host.json`, `queries.jsonl.gz`, `responses.bin.gz`, `updates.jsonl`, `metrics.jsonl`, `load.json`, `summary.json`, and, for signed cells, `verification.jsonl` and the public test-zone `trust_anchor.key`. Raw response frames use a 13-byte big-endian header: 8-byte query ID, 1-byte attempt index, and 4-byte length. The batch verifier checks the captured positive Answer RRsets against the pinned key after load stops. It also checks the response question, DNS ID, signature time, signer, and key. This is private-zone positive-answer verification, not a recursive public DNSSEC chain validator. Negative proofs are not validated and do not count as successful service resolutions.
 
-Per-pod Prometheus samples are taken at roughly 1 Hz with before and after snapshots. A run is excluded if it lacks full-window CPU boundaries or enough periodic samples. Average CPU cores are the difference in CoreDNS process CPU seconds divided by elapsed time. This is whole-process CPU, not crypto-only CPU. Successful-response P99 is always shown next to the offered-query count and failures; a timed-out or invalid response never disappears from the denominator. Update visibility is an upper bound from API acknowledgment to the first observed new answer under ordinary query load. Events with no such query before the next update are censored.
+Per-pod Prometheus samples are normally taken at roughly 1 Hz with before and after snapshots. A completed query window with invalid or missing CPU samples retains its query outcomes and marks CPU unavailable. Average CPU cores are the difference in CoreDNS process CPU seconds divided by elapsed time. This is whole-process CPU, not crypto-only CPU. Successful-response P99 is always shown next to the offered-query count and failures; a timed-out or invalid response never disappears from the denominator. Update visibility is an upper bound from API acknowledgment to the first observed new answer under ordinary query load. Events with no such query before the next update are censored. The primary new outcome is fresh, verified answers delivered before a deadline, divided by all offered queries. It retains queries overlapping an update and bounds uncertain states. Returned TTLs, warmup history, signature-cache evictions, pending signing, client CPU/RSS and host memory pressure are saved as diagnostics.
 
 The campaign directory contains `tables/run_summaries.csv`, `tables/outcomes.json`, `figures/latency_cpu.pdf`, `figures/latency_cpu.png`, and `report.md`. Figures are generated from complete runs only. The study does not infer server saturation from the product of query rate and signing wall time.
 
@@ -84,8 +86,10 @@ The saved 66 study and control runs precede the signature ownership correction. 
 
 Builds fetch the declared commits directly and always invoke Go's incremental build. The runner checks `build/source-manifest.json` before measurement so a changed patch cannot silently be paired with an old binary. The manifest records whether the ownership fix is present. Each run also records hashes of the Python acquisition source. Campaign resume refuses a changed acquisition implementation or build, and the deployed image tag must match the build manifest. Use a new output directory for the corrected implementation; archived campaigns remain available for offline analysis.
 
-For the archived schema, analysis computes CPU and signing rates between the first periodic load scrape and the end scrape. Those samples share a clock origin; the original pre-load snapshot did not. All repaired pod intervals span at least 29.97 seconds. New collection uses absolute monotonic timestamps. Missing verification in a signed run is an error, and every response frame must match its query ID, attempt index, and recorded length. Freshness uses the final DNS transaction and excludes responses overlapping the next update request. It counts older versions separately from unexpected addresses.
+For the archived schema, analysis computes CPU and signing rates between the first periodic load scrape and the end scrape. Those samples share a clock origin; the original pre-load snapshot did not. All repaired pod intervals span at least 29.97 seconds. New collection uses absolute monotonic timestamps. Missing verification in a signed run is an error, and every response frame must match its query ID, attempt index, and recorded length. The archived update-visibility metric uses the final DNS transaction and excludes responses overlapping the next update request. The new answer-completion freshness metric explicitly retains those overlaps and is reported separately. Both distinguish older versions from unexpected addresses.
 
 The five manuscript figures cover the architecture, received DNS message sizes, signing work and CPU, traffic and TCP policy sensitivity, and cache/quota controls. The old response-size extrema and signing variability plots are not reused. The cache control is explicitly labeled as the measured interaction in the older build.
 
-Offline commands (`report`, `export-paper`, `package`, and `verify-package`) skip Kubernetes tool downloads once Python dependencies are installed. Starting the default four-GiB Kind node requires five GiB of available host memory; running with an existing node requires one GiB of available headroom. These are conservative guards, not a measured minimum host specification.
+Offline commands (`plan`, `report`, `export-paper`, `package`, and `verify-package`) skip Kubernetes tool downloads once Python dependencies are installed. Starting the default four-GiB Kind node requires five GiB of available host memory; running with an existing node requires one GiB of available headroom. These are conservative guards, not a measured minimum host specification.
+
+For the complete campaign, aim for 6 to 8 GiB available before starting Kind. Close unused browser and editor windows and check `vmstat 1 10` for active swapping. Use `BUILD_JOBS=1`; no Prometheus server or application pods are required. `./bench cleanup` releases the dedicated cluster. See [docs/freshness-study.md](docs/freshness-study.md) for the complete sequence, experimental assumptions and remaining limits.

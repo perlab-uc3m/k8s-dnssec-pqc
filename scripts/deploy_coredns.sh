@@ -191,6 +191,9 @@ metadata:
     app: coredns-pqc
 spec:
   replicas: ${COREDNS_REPLICAS}
+  strategy:
+    type: Recreate
+    rollingUpdate: null
   selector:
     matchLabels:
       app: coredns-pqc

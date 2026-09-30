@@ -1,0 +1,47 @@
+# Correctness and collection check only; these short runs must not enter the paper comparison.
+schema_version: 1
+campaign_id: freshness-smoke
+study: algorithm_freshness_interaction
+context: kind-pqc-dnssec-revision
+namespace: bench
+domain: cluster.local
+repetitions: 1
+cell_order: randomized
+warmup_s: 5
+measurement_s: 10
+dynamic_warmup: true
+require_ownership_fix: true
+query_rate: 20
+update_rate: 1
+names: 3
+sig_cache_cap: 9984
+response_cache_ttl: 0
+record_ttl: 5
+cpu_limit: '1'
+memory_limit: 512Mi
+transport_policy: reused_tcp
+arrival_mode: poisson
+popularity: uniform
+max_inflight: 128
+tcp_connections: 64
+timeout_s: 2.0
+seed: 20260930
+cells:
+- id: ed25519-u1-ttl1
+  algorithm: ED25519
+  algorithm_id: 15
+  algorithm_type: classical
+  update_rate: 1
+  response_cache_ttl: 1
+- id: mldsa44-u1-ttl5
+  algorithm: ML-DSA-44
+  algorithm_id: 18
+  algorithm_type: pqc
+  update_rate: 1
+  response_cache_ttl: 5
+- id: sphincs128s-u1-ttl1
+  algorithm: SPHINCS+-SHA2-128s-simple
+  algorithm_id: 19
+  algorithm_type: pqc
+  update_rate: 1
+  response_cache_ttl: 1

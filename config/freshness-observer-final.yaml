@@ -1,0 +1,47 @@
+# Repeated unsigned generator and collection controls; 0 means boundary snapshots only.
+schema_version: 1
+campaign_id: freshness-observer-final
+study: algorithm_freshness_interaction
+context: kind-pqc-dnssec-revision
+namespace: bench
+domain: cluster.local
+repetitions: 3
+cell_order: randomized
+warmup_s: 20
+measurement_s: 120
+dynamic_warmup: true
+require_ownership_fix: true
+query_rate: 100
+update_rate: 16
+names: 32
+sig_cache_cap: 9984
+response_cache_ttl: 0
+record_ttl: 5
+cpu_limit: '0.5'
+memory_limit: 512Mi
+transport_policy: reused_tcp
+arrival_mode: poisson
+popularity: uniform
+max_inflight: 128
+tcp_connections: 64
+timeout_s: 2.0
+seed: 20261001
+cells:
+- id: unsigned-q100-sampling1
+  algorithm: Baseline
+  algorithm_id: 0
+  algorithm_type: baseline
+  query_rate: 100
+  sampling_interval_s: 1
+- id: unsigned-q400-sampling1
+  algorithm: Baseline
+  algorithm_id: 0
+  algorithm_type: baseline
+  query_rate: 400
+  sampling_interval_s: 1
+- id: unsigned-q400-sampling0
+  algorithm: Baseline
+  algorithm_id: 0
+  algorithm_type: baseline
+  query_rate: 400
+  sampling_interval_s: 0

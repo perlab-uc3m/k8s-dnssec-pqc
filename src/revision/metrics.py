@@ -132,7 +132,7 @@ class Metrics:
         self.anchor = 0.0
         self.poll_task: asyncio.Task | None = None
 
-    def start(self, anchor: float) -> None:
+    def start(self, anchor: float, expected_replicas: int = 1) -> None:
         self.anchor = anchor
         doc = _kubectl_json(
             self.kubectl,
@@ -154,8 +154,13 @@ class Metrics:
                 "phase": item["status"].get("phase"),
             }
             for item in doc["items"]
+            if item["metadata"].get("deletionTimestamp") is None
+            and any(
+                condition.get("type") == "Ready" and condition.get("status") == "True"
+                for condition in item["status"].get("conditions", [])
+            )
         ]
-        if not self.pods or any(p["phase"] != "Running" for p in self.pods):
+        if len(self.pods) != expected_replicas or any(p["phase"] != "Running" for p in self.pods):
             raise RuntimeError(f"CoreDNS pods unavailable: {self.pods}")
         try:
             for pod in self.pods:
@@ -251,7 +256,9 @@ def window_elapsed(first: dict, last: dict) -> float:
     return last[field] - first[field]
 
 
-def validate_window(path: Path, duration_s: float, expected_pods: int) -> dict:
+def validate_window(
+    path: Path, duration_s: float, expected_pods: int, interval_s: float = 1.0
+) -> dict:
     """Reject runs whose CPU window or periodic samples are incomplete."""
     rows = [json.loads(line) for line in path.open()]
     by_uid: dict[str, list[dict]] = {}
@@ -288,7 +295,7 @@ def validate_window(path: Path, duration_s: float, expected_pods: int) -> dict:
         if window_elapsed(first, last) < duration_s * 0.9:
             raise RuntimeError(f"Short metrics window for pod {uid}")
         good = sum("series" in x and "process_cpu_seconds_total" in x["series"] for x in period)
-        if good < duration_s * 0.8:
+        if interval_s > 0 and good < duration_s * 0.8 / interval_s:
             raise RuntimeError(f"Only {good} valid periodic samples for pod {uid} in {duration_s}s")
         result[uid] = {
             "periodic_good": good,

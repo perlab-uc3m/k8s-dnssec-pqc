@@ -1,0 +1,79 @@
+diff --git a/dnssec_pqc.go b/dnssec_pqc.go
+--- a/dnssec_pqc.go
++++ b/dnssec_pqc.go
+@@ -163,6 +163,8 @@
+ 	var executed int32
+ 	sigs, err := d.inflight.Do(k, func() (interface{}, error) {
+ 		atomic.StoreInt32(&executed, 1)
++		signInflight.Inc()
++		defer signInflight.Dec()
+ 		start := time.Now()
+ 
+ 		var sigs []dns.RR
+@@ -237,7 +239,9 @@
+ 	if d.noCache {
+ 		return
+ 	}
+-	d.cache.Add(key, sigs)
++	if d.cache.Add(key, sigs) {
++		cacheEvictions.Inc()
++	}
+ }
+ 
+ func (d Dnssec) get(key uint64, server string) ([]dns.RR, bool) {
+diff --git a/metrics.go b/metrics.go
+--- a/metrics.go
++++ b/metrics.go
+@@ -8,6 +8,14 @@
+ )
+ 
+ var (
++	cacheEvictions = promauto.NewCounter(prometheus.CounterOpts{
++		Namespace: plugin.Namespace, Subsystem: "dnssec_pqc", Name: "cache_evictions_total",
++		Help: "Signature cache insertions that evicted an existing entry in this process.",
++	})
++	signInflight = promauto.NewGauge(prometheus.GaugeOpts{
++		Namespace: plugin.Namespace, Subsystem: "dnssec_pqc", Name: "sign_inflight",
++		Help: "Signing leaders still executing in this process.",
++	})
+ 	// cacheSize is the number of elements in the dnssec cache.
+ 	cacheSize = promauto.NewGaugeVec(prometheus.GaugeOpts{
+ 		Namespace: plugin.Namespace,
+diff --git a/cache_eviction_test.go b/cache_eviction_test.go
+new file mode 100644
+--- /dev/null
++++ b/cache_eviction_test.go
+@@ -0,0 +1,33 @@
++package dnssec_pqc
++
++import (
++	"github.com/coredns/coredns/plugin/pkg/cache"
++	dto "github.com/prometheus/client_model/go"
++	"testing"
++)
++
++func TestSignatureCacheEvictionCounter(t *testing.T) {
++	d := Dnssec{cache: cache.New(1024)}
++	value := func() float64 {
++		metric := new(dto.Metric)
++		if err := cacheEvictions.Write(metric); err != nil {
++			t.Fatal(err)
++		}
++		return metric.GetCounter().GetValue()
++	}
++	before := value()
++	for i := uint64(0); i < 4; i++ {
++		d.set(i*256, nil)
++	}
++	d.set(0, nil)
++	if value() != before {
++		t.Fatal("replacement counted as eviction")
++	}
++	d.set(4*256, nil)
++	if value() != before+1 {
++		t.Fatal("full shard eviction not counted")
++	}
++	if d.cache.Len() != 4 {
++		t.Fatal("cache policy or capacity changed")
++	}
++}

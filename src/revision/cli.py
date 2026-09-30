@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import platform
+import random
 import shutil
 import subprocess
 import sys
@@ -22,8 +23,9 @@ import yaml
 from .metrics import Metrics, cgroup_sample, validate_window
 from .package import package, verify_package
 from .paper import export_controls, export_paper
-from .queries import run_load
+from .queries import ReusedTCP, run_load
 from .report import report, summarize_run
+from .resources import HostMonitor, snapshot
 from .workload import HeadlessWorkload, endpoint_address
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -64,7 +66,35 @@ def config(path: Path) -> dict:
         "reused_tcp",
     ):
         raise ValueError("Unknown transport policy")
+    if doc.get("cell_order", "fixed") not in ("fixed", "randomized"):
+        raise ValueError("cell_order must be fixed or randomized")
+    for cell in doc["cells"]:
+        values = {**doc, **cell}
+        if not 1 <= values["names"] <= 250:
+            raise ValueError("names must be between 1 and 250")
+        if values["query_rate"] <= 0 or values["measurement_s"] <= 0 or values["warmup_s"] <= 0:
+            raise ValueError("positive rates and run windows required")
+        if values.get("sampling_interval_s", 1) < 0:
+            raise ValueError("sampling_interval_s cannot be negative")
+        if values.get("update_rate", 0) < 0 or values.get("response_cache_ttl", 0) < 0:
+            raise ValueError("update rate and cache TTL cannot be negative")
+        if values.get("require_ownership_fix") and values.get("record_ttl", 5) < values.get(
+            "response_cache_ttl", 0
+        ):
+            raise ValueError(
+                "record_ttl must cover the response-cache ceiling in the freshness design"
+            )
     return doc
+
+
+def cell_schedule(doc: dict) -> list[dict]:
+    schedule = []
+    for repetition in range(1, doc["repetitions"] + 1):
+        cells = list(doc["cells"])
+        if doc.get("cell_order", "fixed") == "randomized":
+            random.Random(doc.get("seed", 1) ^ (repetition * 0x68BC21EB)).shuffle(cells)
+        schedule.extend({"repetition": repetition, "cell_id": cell["id"]} for cell in cells)
+    return schedule
 
 
 def artifact_hash(path: Path) -> str:
@@ -200,9 +230,13 @@ async def run_one(doc: dict, cell: dict, repetition: int, attempt: Path, kubectl
             "COREDNS_IMAGE": "coredns-pqc:revision",
         }
     )
-    (attempt / "host.json").write_text(json.dumps(host_manifest(), indent=2) + "\n")
+    manifest = host_manifest()
+    if doc.get("require_ownership_fix") and not manifest["build"].get("signature_ownership_fix"):
+        raise ValueError("This campaign requires the signature ownership fix")
+    (attempt / "host.json").write_text(json.dumps(manifest, indent=2) + "\n")
     run_config = {
         "schema_version": 1,
+        "study": doc.get("study", "revision_sensitivity"),
         "cell_id": cell["id"],
         "repetition": repetition,
         "algorithm": cell["algorithm"],
@@ -223,6 +257,13 @@ async def run_one(doc: dict, cell: dict, repetition: int, attempt: Path, kubectl
         "kubernetes_ttl": doc.get("record_ttl", 5),
         "cpu_limit": doc.get("cpu_limit", "1"),
         "memory_limit": doc.get("memory_limit", "512Mi"),
+        "sampling_interval_s": doc.get("sampling_interval_s", 1.0),
+        "dynamic_warmup": doc.get("dynamic_warmup", False),
+        "query_seed": doc.get("seed", 1) + repetition,
+        "update_seed": (doc.get("seed", 1) + repetition) ^ 0xA27149E3,
+        "max_inflight": doc.get("max_inflight", 256),
+        "tcp_connections": doc.get("tcp_connections", 16),
+        "timeout_s": doc.get("timeout_s", 5.0),
     }
     (attempt / "config.json").write_text(json.dumps(run_config, indent=2) + "\n")
     fixture = HeadlessWorkload(
@@ -233,7 +274,13 @@ async def run_one(doc: dict, cell: dict, repetition: int, attempt: Path, kubectl
         doc.get("seed", 1) + repetition,
     )
     metrics = Metrics(kubectl, doc["context"], attempt)
-    update_task = None
+    update_task = warmup_update_task = host_task = None
+    monitor = HostMonitor(attempt / "host_metrics.jsonl")
+    client_pool = (
+        ReusedTCP("127.0.0.1", 30054, doc.get("tcp_connections", 16))
+        if doc.get("transport_policy") == "reused_tcp"
+        else None
+    )
     try:
         await asyncio.to_thread(fixture.setup)
         command(
@@ -259,6 +306,27 @@ async def run_one(doc: dict, cell: dict, repetition: int, attempt: Path, kubectl
             {fixture.fqdn(i): endpoint_address(i, 0) for i in range(fixture.count)},
         )
         (attempt / "readiness.json").write_text(json.dumps(ready, indent=2) + "\n")
+        (attempt / "initial_state.json").write_text(
+            json.dumps(
+                {name: {"address": values[0], "version": 0} for name, values in ready.items()},
+                indent=2,
+            )
+            + "\n"
+        )
+        metrics.start(time.monotonic(), expected_replicas=doc.get("replicas", 1))
+        warmup_anchor = time.monotonic()
+        if doc.get("dynamic_warmup", False):
+            warmup_dir = attempt / "warmup"
+            warmup_dir.mkdir()
+            warmup_update_task = asyncio.create_task(
+                fixture.changes(
+                    warmup_dir,
+                    warmup_anchor,
+                    doc["warmup_s"],
+                    doc.get("update_rate", 0),
+                    seed=run_config["update_seed"] ^ 0x35718DA7,
+                )
+            )
         warmup = await run_load(
             None,
             "127.0.0.1",
@@ -269,21 +337,57 @@ async def run_one(doc: dict, cell: dict, repetition: int, attempt: Path, kubectl
             doc["warmup_s"],
             doc.get("seed", 1) + repetition + 5000,
             policy=doc.get("transport_policy", "fresh_fallback"),
+            anchor=warmup_anchor,
+            timeout_s=doc.get("timeout_s", 5.0),
+            max_inflight=doc.get("max_inflight", 256),
+            tcp_connections=doc.get("tcp_connections", 16),
+            arrival_mode=doc.get("arrival_mode", "poisson"),
+            popularity=doc.get("popularity", "uniform"),
+            tcp_pool=client_pool,
         )
+        if warmup_update_task is not None:
+            updates = await warmup_update_task
+            (attempt / "warmup/update_summary.json").write_text(
+                json.dumps(updates, indent=2) + "\n"
+            )
+            if updates["errors"] or updates["deadline_missed"]:
+                raise RuntimeError(
+                    "Warmup update schedule was not achieved; inspect warmup artifacts"
+                )
         (attempt / "warmup.json").write_text(json.dumps(warmup, indent=2) + "\n")
-        metrics.start(time.monotonic())
         await cgroup_sample(metrics, "measurement_start")
         await metrics.sample("measurement_start")
         anchor = time.monotonic()
         utc_anchor = time.time()
-        update_task = asyncio.create_task(
-            fixture.changes(attempt, anchor, doc["measurement_s"], doc.get("update_rate", 0))
+        (attempt / "warmup_timing.json").write_text(
+            json.dumps({"warmup_to_measurement_offset_s": warmup_anchor - anchor}, indent=2) + "\n"
         )
-        metrics.poll_task = asyncio.create_task(metrics.poll("measurement", 1.0))
+        monitor.sample("measurement_start")
+        interval = doc.get("sampling_interval_s", 1.0)
+        host_task = asyncio.create_task(monitor.poll(interval)) if interval > 0 else None
+        update_task = asyncio.create_task(
+            fixture.changes(
+                attempt,
+                anchor,
+                doc["measurement_s"],
+                doc.get("update_rate", 0),
+                seed=run_config["update_seed"],
+            )
+        )
+        metrics.poll_task = (
+            asyncio.create_task(metrics.poll("measurement", interval)) if interval > 0 else None
+        )
 
         async def window_end() -> None:
-            metrics.poll_task.cancel()
-            await metrics.poll_task
+            if host_task is not None:
+                if host_task.done() and not host_task.cancelled():
+                    host_task.result()
+                host_task.cancel()
+                await asyncio.gather(host_task, return_exceptions=True)
+            monitor.sample("measurement_end")
+            if metrics.poll_task is not None:
+                metrics.poll_task.cancel()
+                await metrics.poll_task
             await metrics.sample("measurement_end")
             await cgroup_sample(metrics, "measurement_end")
 
@@ -305,15 +409,44 @@ async def run_one(doc: dict, cell: dict, repetition: int, attempt: Path, kubectl
             tcp_connections=doc.get("tcp_connections", 16),
             arrival_mode=doc.get("arrival_mode", "poisson"),
             popularity=doc.get("popularity", "uniform"),
+            tcp_pool=client_pool,
         )
         (attempt / "load.json").write_text(json.dumps(load, indent=2) + "\n")
         update_result = await update_task
         (attempt / "update_summary.json").write_text(json.dumps(update_result, indent=2) + "\n")
         await metrics.sample("post_drain")
         metrics.close()
-        quality = validate_window(
-            attempt / "metrics.jsonl", doc["measurement_s"], len(metrics.pods)
-        )
+        try:
+            quality = {
+                "valid": True,
+                "pods": validate_window(
+                    attempt / "metrics.jsonl", doc["measurement_s"], len(metrics.pods), interval
+                ),
+            }
+        except (RuntimeError, ValueError, OSError) as exc:
+            quality = {"valid": False, "reason": str(exc)}
+        try:
+            status = await asyncio.to_thread(
+                subprocess.check_output,
+                [
+                    kubectl,
+                    "--context",
+                    doc["context"],
+                    "-n",
+                    "kube-system",
+                    "get",
+                    "pods",
+                    "-l",
+                    "app=coredns-pqc",
+                    "-o",
+                    "json",
+                ],
+                text=True,
+                timeout=15,
+            )
+            (attempt / "pod_status.json").write_text(status)
+        except (OSError, subprocess.SubprocessError) as exc:
+            (attempt / "pod_status_error.txt").write_text(str(exc) + "\n")
         (attempt / "metrics_quality.json").write_text(json.dumps(quality, indent=2) + "\n")
         if cell["algorithm_type"] != "baseline":
             command(
@@ -333,6 +466,12 @@ async def run_one(doc: dict, cell: dict, repetition: int, attempt: Path, kubectl
         (attempt / "FAILED").write_text(f"{type(exc).__name__}: {exc}\n")
         raise
     finally:
+        for task in (warmup_update_task, host_task):
+            if task is not None and not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+        if client_pool is not None:
+            await client_pool.close()
         if metrics.poll_task is not None and not metrics.poll_task.done():
             metrics.poll_task.cancel()
             try:
@@ -380,7 +519,7 @@ async def reproduce(path: Path, output: Path, *, build: bool, setup: bool) -> No
         )
     acquisition_files = [
         ROOT / "src/revision" / name
-        for name in ("cli.py", "metrics.py", "queries.py", "workload.py")
+        for name in ("cli.py", "metrics.py", "queries.py", "workload.py", "resources.py")
     ]
     acquisition_files.append(ROOT / "scripts/deploy_coredns.sh")
     freeze_acquisition(
@@ -394,16 +533,19 @@ async def reproduce(path: Path, output: Path, *, build: bool, setup: bool) -> No
         command([str(ROOT / "scripts/setup_revision_cluster.sh")])
     kubectl = str(ROOT / "build/tools/kubectl")
     command([kubectl, "--context", doc["context"], "cluster-info"])
-    for repetition in range(1, doc["repetitions"] + 1):
-        for cell in doc["cells"]:
-            base = output / "runs" / cell["id"] / f"rep-{repetition:02d}"
-            if list(base.glob("attempt-*/COMPLETE")):
-                print(f"Skipping complete {cell['id']} repetition {repetition}", flush=True)
-                continue
-            attempt_no = 1 + len(list(base.glob("attempt-*")))
-            run_dir = base / f"attempt-{attempt_no:02d}"
-            print(f"Run {cell['id']}, repetition {repetition}, attempt {attempt_no}", flush=True)
-            await run_one(doc, cell, repetition, run_dir, kubectl)
+    schedule = cell_schedule(doc)
+    (output / "schedule.json").write_text(json.dumps(schedule, indent=2) + "\n")
+    cells = {cell["id"]: cell for cell in doc["cells"]}
+    for item in schedule:
+        repetition, cell = item["repetition"], cells[item["cell_id"]]
+        base = output / "runs" / cell["id"] / f"rep-{repetition:02d}"
+        if list(base.glob("attempt-*/COMPLETE")):
+            print(f"Skipping complete {cell['id']} repetition {repetition}", flush=True)
+            continue
+        attempt_no = 1 + len(list(base.glob("attempt-*")))
+        run_dir = base / f"attempt-{attempt_no:02d}"
+        print(f"Run {cell['id']}, repetition {repetition}, attempt {attempt_no}", flush=True)
+        await run_one(doc, cell, repetition, run_dir, kubectl)
     report(output)
     print(f"Campaign report: {output / 'report.md'}", flush=True)
 
@@ -440,6 +582,7 @@ def doctor() -> None:
             {
                 "cpu_count": os.cpu_count(),
                 "memory_bytes": mem,
+                "resource_snapshot": snapshot(),
                 "disk_free_bytes": _shutil.disk_usage(ROOT).free,
                 "tools": tools,
                 "ports": ports,
@@ -462,7 +605,7 @@ def main() -> None:
     sub.add_parser("doctor", help="Report local resource and tool preflight")
     sub.add_parser("cleanup", help="Delete only the named revision Kind cluster")
     p = sub.add_parser("reproduce", help="Build, run locally, verify, and plot")
-    p.add_argument("config", type=Path, nargs="?", default=ROOT / "config/revision-smoke.yaml")
+    p.add_argument("config", type=Path, nargs="?", default=ROOT / "config/freshness-smoke.yaml")
     p.add_argument("--output", type=Path)
     p.add_argument("--no-build", action="store_true")
     p.add_argument("--no-setup", action="store_true")
@@ -480,7 +623,7 @@ def main() -> None:
     p.add_argument("archive", type=Path)
     p.add_argument("manifest", type=Path)
     p = sub.add_parser("plan", help="Check campaign configuration and time estimate")
-    p.add_argument("config", type=Path, nargs="?", default=ROOT / "config/revision-smoke.yaml")
+    p.add_argument("config", type=Path, nargs="?", default=ROOT / "config/freshness-smoke.yaml")
     args = parser.parse_args()
     if args.action == "doctor":
         doctor()
@@ -508,7 +651,10 @@ def main() -> None:
         print(f"Verified {verify_package(args.archive, args.manifest)} files")
     elif args.action == "plan":
         doc = config(args.config)
-        seconds = doc["repetitions"] * len(doc["cells"]) * (doc["warmup_s"] + doc["measurement_s"])
+        seconds = doc["repetitions"] * sum(
+            cell.get("warmup_s", doc["warmup_s"]) + cell.get("measurement_s", doc["measurement_s"])
+            for cell in doc["cells"]
+        )
         print(
             json.dumps(
                 {
