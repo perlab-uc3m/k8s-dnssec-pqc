@@ -3,12 +3,11 @@
 
 import argparse
 import logging
-import sys
 from pathlib import Path
 
-from src.runner import load_config, run_campaign
 from src.analyzer import analyze_all
 from src.plotter import generate_all_plots
+from src.runner import load_config, run_campaign
 
 logging.basicConfig(
     level=logging.INFO,
@@ -137,7 +136,9 @@ def main():
                             else (
                                 "netem-sweep"
                                 if args.netem_sweep
-                                else "validation" if args.validation else "full campaign"
+                                else "validation"
+                                if args.validation
+                                else "full campaign"
                             )
                         )
                     )

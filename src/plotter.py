@@ -7,11 +7,11 @@ from pathlib import Path
 import matplotlib
 
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
+import matplotlib.pyplot as plt
 import numpy as np
 
-from src.analyzer import RunSummary, SIGNING_TIMES_MS
+from src.analyzer import SIGNING_TIMES_MS, RunSummary
 
 log = logging.getLogger(__name__)
 
@@ -33,7 +33,7 @@ _ALGO_ORDER = [
 _CMAP = mcolors.LinearSegmentedColormap.from_list("", ["#9fcf69", "#33acdc"])
 _PALETTE = [_CMAP(v) for v in np.linspace(0, 1, len(_ALGO_ORDER))]
 
-ALGO_COLORS = dict(zip(_ALGO_ORDER, _PALETTE))
+ALGO_COLORS = dict(zip(_ALGO_ORDER, _PALETTE, strict=False))
 
 ALGO_MARKERS = {
     "Falcon-512": "o",
@@ -74,12 +74,12 @@ _SIM_MARKER_TCP = "d"  # thin diamond
 _SIM_SIZE = 55
 
 
-def _valid_sim(s: "RunSummary") -> bool:
+def _valid_sim(s: RunSummary) -> bool:
     """True if the run is a simulated-delay run."""
     return s.simulated_delay_ms is not None
 
 
-def _sim_label(s: "RunSummary") -> str:
+def _sim_label(s: RunSummary) -> str:
     """Human-readable label for a simulated-delay run, e.g. 'Ed25519 +10 ms'."""
     base = ALGO_LABELS.get(s.algorithm, s.algorithm)
     delay = (
@@ -713,7 +713,7 @@ def plot_latency_distributions(summaries: list[RunSummary], output: Path):
 
     for i, percentile in enumerate(["latency_p50", "latency_p95", "latency_p99"]):
         means, stds, bar_colors = [], [], []
-        for lbl, runs, is_sim in entries:
+        for _lbl, runs, is_sim in entries:
             vals = [getattr(s, percentile) for s in runs]
             means.append(np.mean(vals) if vals else 0)
             stds.append(np.std(vals) if vals else 0)
@@ -794,12 +794,10 @@ def plot_signing_regime(summaries: list[RunSummary], output: Path):
             alpha=0.8,
         )
         if len(sigmas) > 1:
-            ax.plot(
-                sigmas, p99s, color=ALGO_COLORS[algo], alpha=0.4, linewidth=1.2, linestyle="--"
-            )
+            ax.plot(sigmas, p99s, color=ALGO_COLORS[algo], alpha=0.4, linewidth=1.2, linestyle="--")
 
         bucket = tcp_pts if is_tcp else udp_pts
-        for sig, p99 in zip(sigmas, p99s):
+        for sig, p99 in zip(sigmas, p99s, strict=False):
             bucket.append((np.log10(sig), np.log10(p99)))
 
     ax.set_xlabel(r"Cryptographic load $\Sigma = \lambda_q \cdot \bar{s}$", labelpad=10)
@@ -1099,9 +1097,7 @@ def plot_caching_ratio(summaries: list[RunSummary], campaign_dir: Path, output: 
 
         sc = best.sig_cache_cap or 0
         ttl = int(best.cache_ttl or 0)
-        regime = (
-            f"Sig+TTL={ttl}" if sc > 0 and ttl > 0 else "Sig cache" if sc > 0 else f"TTL={ttl}"
-        )
+        regime = f"Sig+TTL={ttl}" if sc > 0 and ttl > 0 else "Sig cache" if sc > 0 else f"TTL={ttl}"
         s_bar = SIGNING_TIMES_MS.get(algo, 0)
         rows.append((algo, R, R_lo, R_hi, regime, s_bar))
 
@@ -1152,7 +1148,7 @@ def plot_caching_ratio(summaries: list[RunSummary], campaign_dir: Path, output: 
         )
 
     # Annotate R value and winning regime
-    for i, (_, R, _, R_hi_val, regime, _) in enumerate(rows):
+    for i, (_, R, _, _R_hi_val, regime, _) in enumerate(rows):
         ax.text(R_his[i] * 1.12, i, f" {R:.1f}$\\times$ ({regime})", va="center", fontsize=9)
 
     # y-tick labels: algorithm + signing cost
@@ -1165,9 +1161,7 @@ def plot_caching_ratio(summaries: list[RunSummary], campaign_dir: Path, output: 
         " \\,/\\, P_{99}^{\\mathrm{best\\;cache}}$"
     )
     ax.set_xscale("log")
-    ax.axvline(
-        1, color="red", linestyle="--", linewidth=1, alpha=0.7, label="$R = 1$ (no benefit)"
-    )
+    ax.axvline(1, color="red", linestyle="--", linewidth=1, alpha=0.7, label="$R = 1$ (no benefit)")
     ax.legend(loc="lower right", framealpha=0.9)
     ax.set_title("Caching speedup ratio (peak load)")
     _grid(ax)
@@ -1292,7 +1286,7 @@ def plot_caching_theory(summaries: list[RunSummary], campaign_dir: Path, output:
         s_c1,
         alpha=0.10,
         color="#33acdc",
-        label=f"Caching window " f"$1/q_r < \\bar{{s}} < 1/c_r$",
+        label="Caching window $1/q_r < \\bar{s} < 1/c_r$",
     )
 
     # Window bound lines
@@ -1332,12 +1326,7 @@ def plot_caching_theory(summaries: list[RunSummary], campaign_dir: Path, output:
         )
         # Label each point
         label = ALGO_LABELS.get(algo, algo)
-        x_off = 1.15 if exp_R[i] > 3 else 1.25
-        y_off = 1.0
         ha = "left"
-        # Special positioning to avoid overlap
-        if exp_R[i] < 2 and exp_s[i] < 0.3:
-            y_off = 1.15  # push up slightly for the cluster
         ax.annotate(
             label,
             (exp_s[i], exp_R[i]),
@@ -1392,8 +1381,9 @@ def plot_caching_theory(summaries: list[RunSummary], campaign_dir: Path, output:
         if s.algorithm in best_cache_p99:
             sim_by_algo.setdefault(s.algorithm, []).append(s)
 
-    from src.analyzer import TRANSPORT_OVERHEAD_MS
     from matplotlib.lines import Line2D
+
+    from src.analyzer import TRANSPORT_OVERHEAD_MS
 
     for algo, runs in sim_by_algo.items():
         runs_sorted = sorted(runs, key=lambda r: r.simulated_delay_ms)
@@ -1419,7 +1409,7 @@ def plot_caching_theory(summaries: list[RunSummary], campaign_dir: Path, output:
             zorder=6,
         )
         # Label each point with its sim_label
-        for r, xi, yi in zip(runs_sorted, xs, ys):
+        for r, xi, yi in zip(runs_sorted, xs, ys, strict=False):
             ax.annotate(
                 _sim_label(r),
                 (xi, yi),
@@ -1560,7 +1550,7 @@ def plot_response_sizes(summaries: list[RunSummary], output: Path):
 
     signed_means, unsigned_sizes, signed_lo, signed_hi = [], [], [], []
     colors = []
-    for lbl, runs, is_sim, base_algo in entries:
+    for _lbl, runs, is_sim, base_algo in entries:
         maxes = [s.response_size_max for s in runs]
         mean_signed = np.mean(maxes)
         signed_means.append(mean_signed)
@@ -1615,7 +1605,7 @@ def plot_response_sizes(summaries: list[RunSummary], output: Path):
     for patch in list(bars_u) + list(bars_s):
         patch.set_antialiased(False)
 
-    for i, (sz, entry) in enumerate(zip(signed_means, entries)):
+    for i, (sz, _entry) in enumerate(zip(signed_means, entries, strict=False)):
         if sz > 1232:
             ax.text(
                 i + slot / 2 + gap,
@@ -1700,7 +1690,7 @@ def plot_transport_breakdown(summaries: list[RunSummary], output: Path):
         uns_udp, uns_tcp, sig_udp, sig_tcp = [], [], [], []
         bar_colors = []
 
-        for key, label, runs in entries:
+        for _key, _label, runs in entries:
             uf = np.mean([s.unsigned_fraction for s in runs])
             sf = 1.0 - uf
             unsigned_size = runs[0].response_size_min
@@ -1730,7 +1720,7 @@ def plot_transport_breakdown(summaries: list[RunSummary], output: Path):
             alpha=0.35,
             label="Unsigned (UDP)",
         )
-        b1 = [a + b for a, b in zip(b0, uns_udp)]
+        b1 = [a + b for a, b in zip(b0, uns_udp, strict=False)]
         bars_su = ax.bar(
             x,
             sig_udp,
@@ -1740,7 +1730,7 @@ def plot_transport_breakdown(summaries: list[RunSummary], output: Path):
             linewidth=0.8,
             label="Signed (UDP)",
         )
-        b2 = [a + b for a, b in zip(b1, sig_udp)]
+        b2 = [a + b for a, b in zip(b1, sig_udp, strict=False)]
         bars_ut = ax.bar(
             x,
             uns_tcp,
@@ -1752,7 +1742,7 @@ def plot_transport_breakdown(summaries: list[RunSummary], output: Path):
             alpha=0.35,
             label="Unsigned (TCP)",
         )
-        b3 = [a + b for a, b in zip(b2, uns_tcp)]
+        b3 = [a + b for a, b in zip(b2, uns_tcp, strict=False)]
         bars_st = ax.bar(
             x,
             sig_tcp,
@@ -2112,7 +2102,7 @@ def plot_throughput_vs_signing_time(summaries: list[RunSummary], output: Path):
             bucket.append((np.log10(max(eff_ms, 1e-6)), s.actual_qps))
 
         # ── shaded convex-hull clusters ─────────────────────────────────
-        def _draw_cluster(pts_mixed, color, label):
+        def _draw_cluster(pts_mixed, color, label, ax=ax):
             """Draw convex hull in log-x / linear-y space."""
             if len(pts_mixed) < 3:
                 return
@@ -2480,9 +2470,7 @@ def plot_effective_signing_rate(summaries: list[RunSummary], output: Path):
         and s.network_rate_kbps is None
     ]
     if not runs:
-        log.warning(
-            "No singleflight data for uncached runs – skipping effective_signing_rate plot"
-        )
+        log.warning("No singleflight data for uncached runs – skipping effective_signing_rate plot")
         return
 
     fig, ax = plt.subplots()
@@ -2616,7 +2604,7 @@ def plot_cache_effectiveness(summaries: list[RunSummary], output: Path):
     width = 0.35
 
     hit_rates, coal_rates = [], []
-    for key, label, runs, is_sim in entries:
+    for _key, _label, runs, _is_sim in entries:
         hit_rates.append(np.mean([s.cache_hit_rate for s in runs]))
         coal = []
         for s in runs:
@@ -2919,7 +2907,7 @@ def plot_latency_vs_size(summaries: list[RunSummary], output: Path):
     sim_by_key: dict[tuple, list[RunSummary]] = {}
     for s in sim_runs:
         sim_by_key.setdefault((s.algorithm, s.simulated_delay_ms), []).append(s)
-    for (algo, delay), runs in sim_by_key.items():
+    for (algo, _delay), runs in sim_by_key.items():
         r = _pick_run(runs) or runs[0]
         is_tcp = TRANSPORT_OVERHEAD_MS.get(algo, 0) > 0
         ax.scatter(
@@ -3313,9 +3301,7 @@ def plot_signing_impact_by_network(summaries: list[RunSummary], output: Path):
     netem_runs = [
         s
         for s in summaries
-        if s.network_delay_ms is not None
-        and s.simulated_delay_ms is None
-        and s.algorithm != "NONE"
+        if s.network_delay_ms is not None and s.simulated_delay_ms is None and s.algorithm != "NONE"
     ]
     if not netem_runs:
         log.warning("No netem data for signing_impact_by_network – skipping")
@@ -3517,9 +3503,7 @@ def plot_network_penalty_bars(summaries: list[RunSummary], output: Path):
     netem_runs = [
         s
         for s in summaries
-        if s.network_delay_ms is not None
-        and s.simulated_delay_ms is None
-        and s.algorithm != "NONE"
+        if s.network_delay_ms is not None and s.simulated_delay_ms is None and s.algorithm != "NONE"
     ]
     if not netem_runs:
         log.warning("No netem data for network_penalty_bars – skipping")
@@ -3583,6 +3567,7 @@ def plot_signing_regime_by_network(summaries: list[RunSummary], output: Path):
     performance factor under realistic WAN conditions.
     """
     from scipy.spatial import ConvexHull
+
     from src.analyzer import TRANSPORT_OVERHEAD_MS
 
     no_cache = [
@@ -3666,7 +3651,7 @@ def plot_signing_regime_by_network(summaries: list[RunSummary], output: Path):
                 )
 
             bucket = tcp_pts if is_tcp else udp_pts
-            for sig, p99 in zip(sigmas, p99s):
+            for sig, p99 in zip(sigmas, p99s, strict=False):
                 if sig > 0 and p99 > 0:
                     bucket.append((np.log10(sig), np.log10(p99)))
 
@@ -3698,7 +3683,7 @@ def plot_signing_regime_by_network(summaries: list[RunSummary], output: Path):
                 bucket.append((np.log10(s.sigma), np.log10(s.latency_p99)))
 
         # Draw convex-hull clusters
-        def _draw_cluster(pts_log, color, label):
+        def _draw_cluster(pts_log, color, label, ax=ax):
             if len(pts_log) < 3:
                 return
             pts = np.array(pts_log)

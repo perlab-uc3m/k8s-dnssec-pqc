@@ -146,9 +146,7 @@ def scrape_coredns_metrics(host: str = "127.0.0.1", port: int = 30153) -> dict:
             # Extract rcode label
             if "rcode=" in key_raw:
                 rcode = (
-                    key_raw.split('rcode="')[1].split('"')[0]
-                    if 'rcode="' in key_raw
-                    else "UNKNOWN"
+                    key_raw.split('rcode="')[1].split('"')[0] if 'rcode="' in key_raw else "UNKNOWN"
                 )
                 rcode_key = f"responses_{rcode}"
                 result[rcode_key] = result.get(rcode_key, 0) + val

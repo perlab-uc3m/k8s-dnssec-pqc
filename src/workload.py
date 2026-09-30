@@ -8,6 +8,7 @@ import string
 import threading
 import time
 from dataclasses import dataclass, field
+
 from kubernetes import client, config
 
 log = logging.getLogger(__name__)
@@ -107,7 +108,7 @@ def run_churn(
 
     log.info("Starting churn at %.1f svc/s for %.0fs", churn_rate, duration)
     start = time.monotonic()
-    interval = 1.0 / churn_rate if churn_rate > 0 else float("inf")
+    1.0 / churn_rate if churn_rate > 0 else float("inf")
 
     while time.monotonic() - start < duration:
         # Poisson inter-arrival

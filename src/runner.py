@@ -9,19 +9,19 @@ import os
 import subprocess
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import yaml
 
-from src.workload import run_churn, cleanup, LiveServicePool
-from src.query import run_queries, QueryResult
 from src.collector import (
-    collect_pod_resources,
-    scrape_signing_metrics,
-    scrape_coredns_metrics,
     collect_container_resources,
+    collect_pod_resources,
+    scrape_coredns_metrics,
+    scrape_signing_metrics,
 )
+from src.query import QueryResult, run_queries
+from src.workload import LiveServicePool, cleanup, run_churn
 
 log = logging.getLogger(__name__)
 
@@ -605,8 +605,8 @@ def _drop_caches():
     Uses Python gc + malloc_trim to release interpreter memory.
     Kernel page cache drops are skipped (require root).
     """
-    import gc
     import ctypes
+    import gc
 
     gc.collect()
     try:
@@ -709,7 +709,7 @@ def run_campaign(
     simulated-delay runs to the same campaign automatically.
     """
     if campaign_id is None:
-        campaign_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        campaign_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     if smoke:
         section = config["smoke"]
     elif pilot:
@@ -868,7 +868,7 @@ def run_campaign(
     prev_netem = object()  # sentinel: track (ndel, nrate) to avoid redundant tc calls
     global_runs_since_compact = 0  # NOT reset on deploy, only on compact/restart
 
-    for algo, scc, ttl, sdel, sim_std, cr, qr, ndel, nrate, rep, out in specs:
+    for algo, scc, ttl, sdel, sim_std, cr, qr, ndel, nrate, _rep, out in specs:
         run_idx += 1
 
         # Resume: skip if results already exist

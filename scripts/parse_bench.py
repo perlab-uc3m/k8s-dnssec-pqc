@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Parse Go benchmark output and write results/signing_bench.json."""
+
 import json
 import re
 import statistics
