@@ -1,3 +1,5 @@
+// keygen-ed writes a classical DNSSEC zone key in BIND format without needing BIND.
+// It supports ED25519 (default), ECDSAP256SHA256 and RSASHA256 (2048 bits).
 package main
 
 import (
@@ -12,17 +14,31 @@ import (
 func main() {
 	domain := flag.String("domain", "cluster.local.", "signed DNS zone")
 	out := flag.String("out", ".", "key directory")
+	algorithm := flag.String("algorithm", "ED25519", "ED25519, ECDSAP256SHA256 or RSASHA256")
 	flag.Parse()
+	algorithms := map[string]struct {
+		number uint8
+		bits   int
+	}{
+		"ED25519":         {dns.ED25519, 256},
+		"ECDSAP256SHA256": {dns.ECDSAP256SHA256, 256},
+		"RSASHA256":       {dns.RSASHA256, 2048},
+	}
+	choice, ok := algorithms[*algorithm]
+	if !ok {
+		fmt.Fprintf(os.Stderr, "unsupported algorithm %q\n", *algorithm)
+		os.Exit(2)
+	}
 	name := dns.Fqdn(*domain)
 	key := &dns.DNSKEY{
 		Hdr:   dns.RR_Header{Name: name, Rrtype: dns.TypeDNSKEY, Class: dns.ClassINET, Ttl: 300},
-		Flags: dns.ZONE, Protocol: 3, Algorithm: dns.ED25519,
+		Flags: dns.ZONE, Protocol: 3, Algorithm: choice.number,
 	}
-	private, err := key.Generate(256)
+	private, err := key.Generate(choice.bits)
 	if err != nil {
 		panic(err)
 	}
-	base := fmt.Sprintf("K%s+015+%05d", name, key.KeyTag())
+	base := fmt.Sprintf("K%s+%03d+%05d", name, choice.number, key.KeyTag())
 	if err := os.MkdirAll(*out, 0700); err != nil {
 		panic(err)
 	}

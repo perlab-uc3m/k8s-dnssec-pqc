@@ -139,3 +139,44 @@ def test_resume_cannot_mix_builds_or_adopt_archived_runs(tmp_path):
     complete.touch()
     with pytest.raises(ValueError, match="Archived campaign"):
         freeze_acquisition(tmp_path, record)
+
+
+def test_lazy_coalescence_counter_preserves_first_events_and_zero():
+    prefix = "coredns_dnssec_pqc_singleflight_coalesced_total"
+    base = {
+        "process_start_time_seconds": 1,
+        'coredns_dnssec_pqc_singleflight_execs_total{server="dns://:53"}': 100,
+    }
+    rows = [
+        {"phase": "measurement_start", "monotonic_s": 100, "series": dict(base)},
+        {"phase": "measurement_end", "monotonic_s": 130, "series": dict(base)},
+    ]
+    assert _metric_delta(rows, prefix, lazy_coalescence=True) == (0, 30)
+    rows[-1]["series"][prefix + '{server="dns://:53"}'] = 2
+    assert _metric_delta(rows, prefix, lazy_coalescence=True) == (2, 30)
+    assert _metric_delta(rows, prefix) is None
+    rows[-1]["series"]["process_start_time_seconds"] = 2
+    assert _metric_delta(rows, prefix, lazy_coalescence=True) is None
+    rows[-1]["series"] = {}
+    assert _metric_delta(rows, prefix, lazy_coalescence=True) is None
+
+
+def test_paper_export_rejects_incomplete_or_mixed_evidence(tmp_path):
+    from src.revision.paper import validate_paper_campaign
+
+    (tmp_path / "campaign.yaml").write_text("repetitions: 2\ncells: [{id: one}]\n")
+    for rep in (1, 2):
+        run = tmp_path / f"runs/one/rep-{rep:02d}/attempt-01"
+        run.mkdir(parents=True)
+        (run / "config.json").write_text(json.dumps({"cell_id": "one", "repetition": rep}))
+        (run / "host.json").write_text(
+            json.dumps({"cpu_model": "host A", "build": {"image_id": "a"}})
+        )
+        (run / "COMPLETE").touch()
+    validate_paper_campaign(tmp_path)
+    (run / "host.json").write_text(json.dumps({"cpu_model": "host B", "build": {"image_id": "b"}}))
+    with pytest.raises(ValueError, match="different measured builds or hosts"):
+        validate_paper_campaign(tmp_path)
+    (run / "COMPLETE").unlink()
+    with pytest.raises(ValueError, match="every declared cell"):
+        validate_paper_campaign(tmp_path)

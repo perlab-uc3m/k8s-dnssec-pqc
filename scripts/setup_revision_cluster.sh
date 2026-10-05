@@ -8,7 +8,7 @@ context=kind-pqc-dnssec-revision
 test -x "$kind_bin"
 test -x "$kubectl_bin"
 test -f "$repo_dir/build/image-id.txt"
-if ! "$kind_bin" get clusters | rg -qx "$cluster"; then
+if ! "$kind_bin" get clusters | grep -qx "$cluster"; then
     "$kind_bin" create cluster --config "$repo_dir/k8s/kind-laptop.yaml"
 fi
 docker update --memory="${KIND_MEMORY_LIMIT:-4g}" \

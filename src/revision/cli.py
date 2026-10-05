@@ -21,6 +21,8 @@ import dns.rdatatype
 import yaml
 
 from .metrics import Metrics, cgroup_sample, validate_window
+from .netem import apply_netem
+from .netem import preflight as netem_preflight
 from .package import package, verify_package
 from .paper import export_controls, export_paper
 from .queries import ReusedTCP, run_load
@@ -78,6 +80,14 @@ def config(path: Path) -> dict:
             raise ValueError("sampling_interval_s cannot be negative")
         if values.get("update_rate", 0) < 0 or values.get("response_cache_ttl", 0) < 0:
             raise ValueError("update rate and cache TTL cannot be negative")
+        if values.get("pod_egress_delay_ms", 0) < 0:
+            raise ValueError("pod_egress_delay_ms cannot be negative")
+        if not 0 <= values.get("pod_egress_loss_pct", 0) < 100:
+            raise ValueError("pod_egress_loss_pct must be in [0, 100)")
+        if values.get("udp_retry_s") is not None and values["udp_retry_s"] <= 0:
+            raise ValueError("udp_retry_s must be positive")
+        if not 1 <= values.get("update_batch", 1) <= values["names"]:
+            raise ValueError("update_batch must be between 1 and names")
         if values.get("require_ownership_fix") and values.get("record_ttl", 5) < values.get(
             "response_cache_ttl", 0
         ):
@@ -113,6 +123,9 @@ def validated_build_manifest() -> dict:
     for name, expected in record["inputs"].items():
         if artifact_hash(ROOT / name) != expected:
             raise ValueError(f"Build input changed: {name}; rebuild before measurement")
+    for name, expected in record.get("artifacts", {}).items():
+        if artifact_hash(ROOT / name) != expected:
+            raise ValueError(f"Build artifact changed: {name}; rebuild before measurement")
     if artifact_hash(ROOT / "build/coredns-pqc") != record["binary_sha256"]:
         raise ValueError("CoreDNS binary differs from its build manifest")
     return record
@@ -264,6 +277,10 @@ async def run_one(doc: dict, cell: dict, repetition: int, attempt: Path, kubectl
         "max_inflight": doc.get("max_inflight", 256),
         "tcp_connections": doc.get("tcp_connections", 16),
         "timeout_s": doc.get("timeout_s", 5.0),
+        "pod_egress_delay_ms": doc.get("pod_egress_delay_ms", 0),
+        "pod_egress_loss_pct": doc.get("pod_egress_loss_pct", 0),
+        "udp_retry_s": doc.get("udp_retry_s"),
+        "update_batch": doc.get("update_batch", 1),
     }
     (attempt / "config.json").write_text(json.dumps(run_config, indent=2) + "\n")
     fixture = HeadlessWorkload(
@@ -314,6 +331,15 @@ async def run_one(doc: dict, cell: dict, repetition: int, attempt: Path, kubectl
             + "\n"
         )
         metrics.start(time.monotonic(), expected_replicas=doc.get("replicas", 1))
+        if doc.get("pod_egress_delay_ms", 0) > 0 or doc.get("pod_egress_loss_pct", 0) > 0:
+            # Installed after readiness and before warmup, so every measured query sees it.
+            netem = await asyncio.to_thread(
+                apply_netem,
+                metrics.pods,
+                doc.get("pod_egress_delay_ms", 0),
+                doc.get("pod_egress_loss_pct", 0),
+            )
+            (attempt / "netem.json").write_text(json.dumps(netem, indent=2) + "\n")
         warmup_anchor = time.monotonic()
         if doc.get("dynamic_warmup", False):
             warmup_dir = attempt / "warmup"
@@ -325,6 +351,7 @@ async def run_one(doc: dict, cell: dict, repetition: int, attempt: Path, kubectl
                     doc["warmup_s"],
                     doc.get("update_rate", 0),
                     seed=run_config["update_seed"] ^ 0x35718DA7,
+                    batch=doc.get("update_batch", 1),
                 )
             )
         warmup = await run_load(
@@ -344,6 +371,7 @@ async def run_one(doc: dict, cell: dict, repetition: int, attempt: Path, kubectl
             arrival_mode=doc.get("arrival_mode", "poisson"),
             popularity=doc.get("popularity", "uniform"),
             tcp_pool=client_pool,
+            udp_retry_s=doc.get("udp_retry_s"),
         )
         if warmup_update_task is not None:
             updates = await warmup_update_task
@@ -372,6 +400,7 @@ async def run_one(doc: dict, cell: dict, repetition: int, attempt: Path, kubectl
                 doc["measurement_s"],
                 doc.get("update_rate", 0),
                 seed=run_config["update_seed"],
+                batch=doc.get("update_batch", 1),
             )
         )
         metrics.poll_task = (
@@ -410,6 +439,7 @@ async def run_one(doc: dict, cell: dict, repetition: int, attempt: Path, kubectl
             arrival_mode=doc.get("arrival_mode", "poisson"),
             popularity=doc.get("popularity", "uniform"),
             tcp_pool=client_pool,
+            udp_retry_s=doc.get("udp_retry_s"),
         )
         (attempt / "load.json").write_text(json.dumps(load, indent=2) + "\n")
         update_result = await update_task
@@ -519,7 +549,14 @@ async def reproduce(path: Path, output: Path, *, build: bool, setup: bool) -> No
         )
     acquisition_files = [
         ROOT / "src/revision" / name
-        for name in ("cli.py", "metrics.py", "queries.py", "workload.py", "resources.py")
+        for name in (
+            "cli.py",
+            "metrics.py",
+            "queries.py",
+            "workload.py",
+            "resources.py",
+            "netem.py",
+        )
     ]
     acquisition_files.append(ROOT / "scripts/deploy_coredns.sh")
     freeze_acquisition(
@@ -529,10 +566,27 @@ async def reproduce(path: Path, output: Path, *, build: bool, setup: bool) -> No
             "acquisition": {str(p.relative_to(ROOT)): artifact_hash(p) for p in acquisition_files},
         },
     )
+    provenance = output / "provenance"
+    provenance.mkdir(exist_ok=True)
+    for name in ("go-build-info.txt", "source-manifest.json", "image-id.txt", "signer-checks.txt"):
+        target = provenance / name
+        if not target.exists():
+            shutil.copyfile(ROOT / "build" / name, target)
     if setup:
         command([str(ROOT / "scripts/setup_revision_cluster.sh")])
     kubectl = str(ROOT / "build/tools/kubectl")
     command([kubectl, "--context", doc["context"], "cluster-info"])
+    nodes = subprocess.check_output(
+        [kubectl, "--context", doc["context"], "get", "nodes", "-o", "json"], text=True
+    )
+    (provenance / "nodes.json").write_text(nodes)
+    if any(
+        {**doc, **cell}.get("pod_egress_delay_ms", 0) > 0
+        or {**doc, **cell}.get("pod_egress_loss_pct", 0) > 0
+        for cell in doc["cells"]
+    ):
+        node = doc["context"].removeprefix("kind-") + "-control-plane"
+        print("netem preflight:", netem_preflight(node), flush=True)
     schedule = cell_schedule(doc)
     (output / "schedule.json").write_text(json.dumps(schedule, indent=2) + "\n")
     cells = {cell["id"]: cell for cell in doc["cells"]}
@@ -616,6 +670,12 @@ def main() -> None:
     p.add_argument("--output", required=True, type=Path)
     p.add_argument("--ttl", type=Path, help="Response-cache control campaign")
     p.add_argument("--stress", type=Path, help="Matched CPU budget campaign")
+    p = sub.add_parser("export-final", help="Tables, figures and numbers of the final campaign")
+    p.add_argument("campaign", type=Path)
+    p.add_argument("--output", required=True, type=Path)
+    p.add_argument("--reference", type=Path, help="Earlier campaign for the anchor comparison")
+    p = sub.add_parser("check-smoke", help="Stop unless the final smoke campaign is sound")
+    p.add_argument("campaign", type=Path)
     p = sub.add_parser("package", help="Archive raw campaigns with per-file SHA256 manifest")
     p.add_argument("campaigns", nargs="+", type=Path)
     p.add_argument("--output", required=True, type=Path)
@@ -645,6 +705,17 @@ def main() -> None:
         export_paper(args.campaign, args.output)
         if args.ttl:
             export_controls(args.ttl, args.stress, args.output)
+    elif args.action == "export-final":
+        from .final import export_final
+
+        export_final(args.campaign, args.output, args.reference)
+    elif args.action == "check-smoke":
+        from .final import check_smoke
+
+        problems = check_smoke(args.campaign)
+        if problems:
+            raise SystemExit("Smoke check failed:\n  " + "\n  ".join(problems))
+        print("Smoke check passed", flush=True)
     elif args.action == "package":
         print(package(args.campaigns, args.output))
     elif args.action == "verify-package":

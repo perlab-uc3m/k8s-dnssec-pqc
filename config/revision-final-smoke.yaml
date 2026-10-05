@@ -1,0 +1,157 @@
+# Final revision design; see docs/revision-final.md for controls and decision rules.
+schema_version: 1
+campaign_id: revision-final-smoke
+study: revision_final
+context: kind-pqc-dnssec-revision
+namespace: bench
+domain: cluster.local
+repetitions: 1
+cell_order: fixed
+require_ownership_fix: true
+warmup_s: 5
+measurement_s: 10
+query_rate: 100
+update_rate: 1
+names: 32
+sig_cache_cap: 1024
+response_cache_ttl: 0
+record_ttl: 5
+cpu_limit: '1'
+memory_limit: 512Mi
+transport_policy: fresh_fallback
+arrival_mode: poisson
+popularity: uniform
+pod_egress_delay_ms: 0
+pod_egress_loss_pct: 0
+update_batch: 1
+seed: 20261006
+cells:
+- id: ecdsap256-reference
+  algorithm: ECDSAP256SHA256
+  algorithm_id: 13
+  algorithm_type: classical
+- id: rsasha256-reference
+  algorithm: RSASHA256
+  algorithm_id: 8
+  algorithm_type: classical
+- id: falcon1024-reference
+  algorithm: Falcon-1024
+  algorithm_id: 27
+  algorithm_type: pqc
+- id: mayo1-reference
+  algorithm: MAYO-1
+  algorithm_id: 20
+  algorithm_type: pqc
+- id: mayo3-reference
+  algorithm: MAYO-3
+  algorithm_id: 30
+  algorithm_type: pqc
+- id: snova-reference
+  algorithm: SNOVA_24_5_4
+  algorithm_id: 21
+  algorithm_type: pqc
+- id: mldsa65-reference
+  algorithm: ML-DSA-65
+  algorithm_id: 28
+  algorithm_type: pqc
+- id: mldsa87-reference
+  algorithm: ML-DSA-87
+  algorithm_id: 38
+  algorithm_type: pqc
+- id: mldsa44-u50
+  algorithm: ML-DSA-44
+  algorithm_id: 18
+  algorithm_type: pqc
+  update_rate: 50
+- id: mldsa44-q400
+  algorithm: ML-DSA-44
+  algorithm_id: 18
+  algorithm_type: pqc
+  query_rate: 400
+- id: sphincs128s-u4
+  algorithm: SPHINCS+-SHA2-128s-simple
+  algorithm_id: 19
+  algorithm_type: pqc
+  update_rate: 4
+- id: sphincs128s-u12
+  algorithm: SPHINCS+-SHA2-128s-simple
+  algorithm_id: 19
+  algorithm_type: pqc
+  update_rate: 12
+- id: sphincs128s-u8-ttl5
+  algorithm: SPHINCS+-SHA2-128s-simple
+  algorithm_id: 19
+  algorithm_type: pqc
+  update_rate: 8
+  response_cache_ttl: 5
+- id: sphincs128s-u4-2pods-0.5core
+  algorithm: SPHINCS+-SHA2-128s-simple
+  algorithm_id: 19
+  algorithm_type: pqc
+  update_rate: 4
+  replicas: 2
+  cpu_limit: '0.5'
+- id: sphincs128s-u8-2core
+  algorithm: SPHINCS+-SHA2-128s-simple
+  algorithm_id: 19
+  algorithm_type: pqc
+  update_rate: 8
+  cpu_limit: '2'
+- id: sphincs128s-nocache-1name-q10
+  transport_policy: fresh_tcp
+  algorithm: SPHINCS+-SHA2-128s-simple
+  algorithm_id: 19
+  algorithm_type: pqc
+  names: 1
+  update_rate: 0
+  sig_cache_cap: 0
+  query_rate: 10
+- id: sphincs128s-rollout
+  algorithm: SPHINCS+-SHA2-128s-simple
+  algorithm_id: 19
+  algorithm_type: pqc
+  update_batch: 8
+- id: mldsa44-delay10
+  algorithm: ML-DSA-44
+  algorithm_id: 18
+  algorithm_type: pqc
+  pod_egress_delay_ms: 10
+- id: mldsa44-reused-tcp-delay10
+  algorithm: ML-DSA-44
+  algorithm_id: 18
+  algorithm_type: pqc
+  pod_egress_delay_ms: 10
+  transport_policy: reused_tcp
+- id: mldsa44-loss1
+  algorithm: ML-DSA-44
+  algorithm_id: 18
+  algorithm_type: pqc
+  pod_egress_loss_pct: 1
+  udp_retry_s: 1.0
+- id: mldsa44-n250-u50-zipf-cap9984
+  algorithm: ML-DSA-44
+  algorithm_id: 18
+  algorithm_type: pqc
+  names: 250
+  update_rate: 50
+  sig_cache_cap: 9984
+  popularity: zipf_1_1
+- id: unsigned-reference
+  algorithm: Baseline
+  algorithm_id: 0
+  algorithm_type: baseline
+- id: ed25519-reference
+  algorithm: ED25519
+  algorithm_id: 15
+  algorithm_type: classical
+- id: falcon512-reference
+  algorithm: Falcon-512
+  algorithm_id: 17
+  algorithm_type: pqc
+- id: mldsa44-n250-u50-cap1024
+  algorithm: ML-DSA-44
+  algorithm_id: 18
+  algorithm_type: pqc
+  names: 250
+  update_rate: 50
+  sig_cache_cap: 1024

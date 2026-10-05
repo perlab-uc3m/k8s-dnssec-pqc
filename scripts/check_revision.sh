@@ -16,9 +16,9 @@ cd "$repo_dir"
 "$python_bin" -m ruff check src/revision tests
 "$python_bin" -m ruff format --check src/revision tests
 "$python_bin" -m pytest -q tests
-if [ -n "$(gofmt -l tools/keygen_ed/main.go tools/verify/main.go)" ]; then
+if [ -n "$(gofmt -l tools/keygen_ed/main.go tools/verify/main.go tools/check_signers/main.go)" ]; then
     echo "Go source is not gofmt-clean." >&2
     exit 1
 fi
 bash -n bench scripts/bootstrap_revision.sh scripts/build_revision.sh \
-    scripts/setup_revision_cluster.sh scripts/deploy_coredns.sh scripts/run_final_campaigns.sh
+    scripts/setup_revision_cluster.sh scripts/deploy_coredns.sh scripts/run_final_campaigns.sh scripts/run_revision_final.sh

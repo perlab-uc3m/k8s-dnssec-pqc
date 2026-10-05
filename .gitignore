@@ -31,4 +31,5 @@ Thumbs.db
 
 # Revision benchmark outputs
 .pytest_cache/
+.ruff_cache/
 release/

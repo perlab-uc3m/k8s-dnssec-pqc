@@ -34,13 +34,36 @@ def _frames(path: Path):
             yield query_id, attempt, data
 
 
-def _metric_delta(samples: list[dict], prefix: str) -> tuple[float, float] | None:
+def _metric_delta(
+    samples: list[dict], prefix: str, *, lazy_coalescence: bool = False
+) -> tuple[float, float] | None:
     try:
         first, last, _ = measurement_window(samples)
     except ValueError:
         return None
     before = [v for k, v in first.get("series", {}).items() if k.startswith(prefix)]
     after = [v for k, v in last.get("series", {}).items() if k.startswith(prefix)]
+    # This pinned plugin creates the CounterVec label only on its first waiter.
+    # Require a live signer and one process lifetime before interpreting absence.
+    if lazy_coalescence and prefix == "coredns_dnssec_pqc_singleflight_coalesced_total":
+        start = first.get("series", {}).get("process_start_time_seconds")
+        live_signer = all(
+            any(
+                k.startswith("coredns_dnssec_pqc_singleflight_execs_total")
+                for k in row.get("series", {})
+            )
+            for row in (first, last)
+        )
+        if (
+            live_signer
+            and start is not None
+            and start == last.get("series", {}).get("process_start_time_seconds")
+        ):
+            # An exported label cannot disappear without a reset or scrape error.
+            if before and not after:
+                return None
+            before = before or [0.0]
+            after = after or [0.0]
     if not before or not after:
         return None
     a, b = sum(before), sum(after)
@@ -191,6 +214,8 @@ def summarize_run(run_dir: Path) -> dict:
     signing_keys: Counter[tuple[str, tuple[str, ...]]] = Counter()
     dns_transactions = 0
     dns_transmissions = 0
+    udp_retransmissions = 0
+    retransmitted_queries = 0
     transmission_accounting_complete = True
     udp_wire_bytes = []
     tcp_wire_bytes = []
@@ -207,6 +232,9 @@ def summarize_run(run_dir: Path) -> dict:
             dns_transactions += len(row["attempts"])
             if "transmissions" in row:
                 dns_transmissions += len(row["transmissions"])
+                udp_sends = sum(t["transport"] == "udp" for t in row["transmissions"])
+                udp_retransmissions += max(0, udp_sends - 1)
+                retransmitted_queries += udp_sends > 1
             else:
                 transmission_accounting_complete = False
             if row["answer_a"]:
@@ -306,15 +334,18 @@ def summarize_run(run_dir: Path) -> dict:
     )
     sign_total = sum(x[0] for x in sign_total) if sign_interval is not None else None
 
-    def counter(prefix: str) -> float | None:
+    def counter(prefix: str, *, lazy_coalescence: bool = False) -> float | None:
         if not metrics_valid:
             return None
-        deltas = [_metric_delta(pod_samples, prefix) for pod_samples in by_pod.values()]
+        deltas = [
+            _metric_delta(pod_samples, prefix, lazy_coalescence=lazy_coalescence)
+            for pod_samples in by_pod.values()
+        ]
         return sum(x[0] for x in deltas) if deltas and all(x is not None for x in deltas) else None
 
     hits = counter("coredns_dnssec_pqc_cache_hits_total")
     misses = counter("coredns_dnssec_pqc_cache_misses_total")
-    coalesced = counter("coredns_dnssec_pqc_singleflight_coalesced_total")
+    coalesced = counter("coredns_dnssec_pqc_singleflight_coalesced_total", lazy_coalescence=True)
     sign_wall_sum = counter("coredns_dnssec_pqc_sign_duration_seconds_sum")
     sign_wall_count = counter("coredns_dnssec_pqc_sign_duration_seconds_count")
     mean_sign_wall_s = (
@@ -433,6 +464,12 @@ def summarize_run(run_dir: Path) -> dict:
             )
         },
         "names": config.get("names"),
+        "pod_egress_delay_ms": config.get("pod_egress_delay_ms", 0),
+        "pod_egress_loss_pct": config.get("pod_egress_loss_pct", 0),
+        "udp_retry_s": config.get("udp_retry_s"),
+        "update_batch": config.get("update_batch", 1),
+        "udp_retransmissions": udp_retransmissions,
+        "retransmitted_queries": retransmitted_queries,
         "replicas": config.get("replicas", 1),
         "kubernetes_ttl": config.get("kubernetes_ttl"),
         "warmup_s": config.get("warmup_s"),

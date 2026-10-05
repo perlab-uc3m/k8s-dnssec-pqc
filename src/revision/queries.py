@@ -97,8 +97,17 @@ class ReusedTCP:
 
 
 async def _udp(
-    host: str, port: int, wire: bytes, on_send: Callable[[float], None] | None = None
+    host: str,
+    port: int,
+    wire: bytes,
+    on_send: Callable[[float], None] | None = None,
+    retry_s: float | None = None,
 ) -> tuple[bytes, float]:
+    """One UDP exchange. With retry_s, resend the same query after each silent interval.
+
+    The outer deadline still bounds the exchange. Any reply on the socket ends it, so a
+    late answer to an earlier copy counts like a stub resolver would count it.
+    """
     loop = asyncio.get_running_loop()
     addr = socket.getaddrinfo(host, port, type=socket.SOCK_DGRAM)[0]
     sock = socket.socket(addr[0], socket.SOCK_DGRAM)
@@ -109,8 +118,15 @@ async def _udp(
         if on_send is not None:
             on_send(sent)
         await loop.sock_sendall(sock, wire)
-        response = await loop.sock_recv(sock, 65535)
-        return response, sent
+        if retry_s is None:
+            return await loop.sock_recv(sock, 65535), sent
+        while True:
+            try:
+                return await asyncio.wait_for(loop.sock_recv(sock, 65535), retry_s), sent
+            except TimeoutError:
+                if on_send is not None:
+                    on_send(time.monotonic())
+                await loop.sock_sendall(sock, wire)
     finally:
         sock.close()
 
@@ -193,6 +209,7 @@ async def _one(
     policy: str,
     timeout_s: float,
     pool: ReusedTCP | None,
+    udp_retry_s: float | None = None,
 ) -> QueryRecord:
     record.admitted_s = time.monotonic() - anchor
     query = dns.message.make_query(
@@ -226,7 +243,7 @@ async def _one(
                         record.sent_s = sent - anchor
 
                 if mode == "udp":
-                    response, sent = await _udp(host, udp_port, wire, on_send)
+                    response, sent = await _udp(host, udp_port, wire, on_send, udp_retry_s)
                 elif mode == "tcp":
                     response, sent = await _tcp(host, tcp_port, wire, on_send)
                 else:
@@ -282,12 +299,15 @@ async def run_load(
     arrival_mode: str = "poisson",
     popularity: str = "uniform",
     tcp_pool: ReusedTCP | None = None,
+    udp_retry_s: float | None = None,
 ) -> dict:
     """Run a bounded measurement. output=None performs a real query warmup."""
     if rate <= 0 or duration_s <= 0 or max_inflight <= 0 or not names:
         raise ValueError("positive rate, duration, capacity, and names required")
     if timeout_s <= 0 or tcp_connections < 1:
         raise ValueError("positive timeout and TCP pool size required")
+    if udp_retry_s is not None and udp_retry_s <= 0:
+        raise ValueError("udp_retry_s must be positive")
     if policy not in {"fresh_fallback", "fresh_tcp", "reused_tcp"}:
         raise ValueError(f"Unknown policy: {policy}")
     if arrival_mode not in {"poisson", "burst_2_of_20"}:
@@ -346,6 +366,7 @@ async def run_load(
                     policy,
                     timeout_s,
                     pool,
+                    udp_retry_s,
                 )
             )
         finally:
@@ -416,5 +437,6 @@ async def run_load(
         "popularity": popularity,
         "max_inflight": max_inflight,
         "tcp_connections": tcp_connections if pool else 0,
+        "udp_retry_s": udp_retry_s,
         "verification": "not_checked",
     }

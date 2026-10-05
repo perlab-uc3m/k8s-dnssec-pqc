@@ -139,20 +139,43 @@ class HeadlessWorkload:
         duration_s: float,
         rate: float,
         seed: int | None = None,
+        batch: int = 1,
     ) -> dict:
-        """Start when called. Every acknowledged update has a versioned address."""
+        """Start when called. Every acknowledged update has a versioned address.
+
+        batch=1 gives Poisson updates. batch>1 models a rollout: every batch/rate seconds,
+        after a seeded random phase, batch distinct names change back to back. Both keep
+        the same mean update rate.
+        """
         if rate < 0:
             raise ValueError("negative update rate")
+        if batch < 1 or batch > self.count:
+            raise ValueError("update batch must be between 1 and the number of names")
         planned = 0.0
         count, errors, missed, offered = 0, 0, 0, 0
         rng = self.rng if seed is None else random.Random(seed)
+        schedule: list[tuple[float, int]] = []
+        if rate and batch > 1:
+            interval = batch / rate
+            start = rng.uniform(0, interval)
+            while start < duration_s:
+                schedule.extend((start, index) for index in rng.sample(range(self.count), batch))
+                start += interval
+        pending = iter(schedule)
         with (output / "updates.jsonl").open("w") as file:
             while rate:
-                planned += rng.expovariate(rate)
-                if planned >= duration_s:
-                    break
+                if batch > 1:
+                    item = next(pending, None)
+                    if item is None:
+                        break
+                    planned, index = item
+                else:
+                    planned += rng.expovariate(rate)
+                    if planned >= duration_s:
+                        break
                 await asyncio.sleep(max(0.0, anchor + planned - time.monotonic()))
-                index = rng.randrange(self.count)
+                if batch == 1:
+                    index = rng.randrange(self.count)
                 version = self.versions[index] + 1
                 requested = time.monotonic() - anchor
                 offered += 1
@@ -205,6 +228,7 @@ class HeadlessWorkload:
             "offered": offered,
             "deadline_missed": missed,
             "rate_requested": rate,
+            "batch": batch,
         }
 
     def cleanup(self) -> None:

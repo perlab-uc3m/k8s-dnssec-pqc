@@ -47,9 +47,9 @@ else
     cd "$KEYS_DIR"
 
     if [ "$ALGO_TYPE" = "classical" ]; then
-        # Use BIND's dnssec-keygen for classical algorithms
-        if [ "$ALGORITHM" = "ED25519" ] && [ -x "${BUILD_DIR}/keygen-ed" ]; then
-            "${BUILD_DIR}/keygen-ed" -domain "$DOMAIN" -out "$KEYS_DIR"
+        # keygen-ed writes ED25519, ECDSAP256SHA256 and RSASHA256 keys without BIND.
+        if [ -x "${BUILD_DIR}/keygen-ed" ]; then
+            "${BUILD_DIR}/keygen-ed" -algorithm "$ALGORITHM" -domain "$DOMAIN" -out "$KEYS_DIR"
         else
             dnssec-keygen -a "$ALGORITHM" -n ZONE "$DOMAIN" 2>/dev/null
         fi

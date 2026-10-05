@@ -9,6 +9,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import numpy as np
 
 CACHE_BLUE = "#35a9d6"
 UNCACHED_GREEN = "#a3ca63"
@@ -54,7 +55,7 @@ def bar_points(
             )
     ax.set_xticks(range(len(labels)), labels)
     ax.set_ylabel(ylabel)
-    ax.set_title(title, fontweight="bold")
+    ax.set_title(title, fontweight="bold", fontsize=10)
     ax.tick_params(axis="x", labelsize=8)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
@@ -110,7 +111,7 @@ def plot_campaign(summaries: list[dict], by_cell: dict[str, list[dict]], output:
         else CACHE_BLUE
         for key in keys
     ]
-    fig, axes = plt.subplots(2, 1, figsize=(8.5, 5.4), sharex=True)
+    fig, axes = plt.subplots(2, 1, figsize=(7.1, 4.5), sharex=True)
     bar_points(
         axes[0],
         [_values(by_cell, key, "signs_per_s") for key in keys],
@@ -119,12 +120,27 @@ def plot_campaign(summaries: list[dict], by_cell: dict[str, list[dict]], output:
         "Signing operations/s",
         "(a) Signing work",
     )
+    sign_max = max(
+        (value for key in keys for value in _values(by_cell, key, "signs_per_s")), default=0
+    )
+    for index, key in enumerate(keys):
+        runs = _values(by_cell, key, "signs_per_s")
+        if not runs:
+            continue
+        axes[0].text(
+            index,
+            max(runs) + 0.035 * sign_max,
+            f"{statistics.median(runs):.1f}",
+            ha="center",
+            fontsize=8,
+        )
+    axes[0].set_ylim(top=sign_max * 1.18 if sign_max else 1)
     bar_points(
         axes[1],
-        [_values(by_cell, key, "cpu_cores") for key in keys],
+        [[100 * value for value in _values(by_cell, key, "cpu_cores")] for key in keys],
         labels,
         colors,
-        "CoreDNS CPU (cores)",
+        "CPU (% of one core)",
         "(b) DNS process CPU",
     )
     fig.tight_layout()
@@ -137,7 +153,7 @@ def plot_wire_sizes(by_cell: dict[str, list[dict]], output: Path) -> None:
     cells = REFERENCE_CELLS[:4]
     if not all(key in by_cell for key, _ in cells):
         return
-    fig, ax = plt.subplots(figsize=(6.2, 3.3))
+    fig, ax = plt.subplots(figsize=(3.5, 2.8))
     ax.set_axisbelow(True)
     ax.grid(axis="y", linestyle="--", linewidth=0.6, alpha=0.4)
     for offset, field, color, label in (
@@ -165,12 +181,17 @@ def plot_wire_sizes(by_cell: dict[str, list[dict]], output: Path) -> None:
                 zorder=3,
             )
     ax.axhline(1232, color="#bd4f24", linestyle="--", label="Advertised UDP payload: 1232 B")
-    ax.set_yscale("log")
-    ax.set_ylim(40, 7500)
-    ax.set_xticks(range(len(cells)), [label for _, label in cells])
-    ax.set_ylabel("DNS message bytes")
-    ax.set_title("Received DNS response sizes", fontweight="bold")
-    ax.legend(fontsize=8, loc="upper left", frameon=False)
+    ax.set_ylim(0, 3700)
+    for i, (key, _) in enumerate(cells):
+        median = statistics.median(_values(by_cell, key, "final_wire_p50_bytes"))
+        ax.text(i + 0.18, median + 70, f"{median:.0f}", ha="center", fontsize=7)
+    truncated = statistics.median(_values(by_cell, "mldsa44-reference", "udp_wire_p50_bytes"))
+    ax.text(3 - 0.18, truncated + 70, f"{truncated:.0f}", ha="center", fontsize=7)
+    ax.set_xticks(range(len(cells)), [label for _, label in cells], fontsize=7)
+    ax.set_ylabel("DNS message bytes", fontsize=8)
+    ax.tick_params(axis="y", labelsize=8)
+    ax.set_title("Received DNS response sizes", fontweight="bold", fontsize=10)
+    ax.legend(fontsize=6.5, loc="upper left", frameon=False)
     fig.tight_layout()
     fig.savefig(output / "revision_wire_sizes.pdf")
     fig.savefig(output / "revision_wire_sizes.png", dpi=180)
@@ -181,13 +202,13 @@ def plot_sensitivity(by_cell: dict[str, list[dict]], output: Path) -> None:
     cells = [
         ("mldsa44-reference", "Uniform\nPoisson"),
         ("mldsa44-burst", "Bursts"),
-        ("mldsa44-zipf", "Zipf\npopularity"),
-        ("mldsa44-two-replicas", "Two pods\n1 core each"),
+        ("mldsa44-zipf", "Zipf"),
+        ("mldsa44-two-replicas", "Two pods\n1 core/pod"),
         ("mldsa44-reused-tcp", "Persistent\nTCP"),
     ]
     if not all(key in by_cell for key, _ in cells):
         return
-    fig, axes = plt.subplots(1, 2, figsize=(10.5, 3.7))
+    fig, axes = plt.subplots(1, 2, figsize=(7.1, 3.3))
     for ax, field, title in (
         (axes[0], "p99_ms", "(a) Complete query latency"),
         (axes[1], "dispatch_p99_ms", "(b) Client dispatch delay"),
@@ -200,6 +221,7 @@ def plot_sensitivity(by_cell: dict[str, list[dict]], output: Path) -> None:
             "P99 (ms)",
             title,
         )
+        ax.tick_params(axis="x", labelsize=7)
     fig.tight_layout()
     fig.savefig(output / "revision_sensitivity.pdf")
     fig.savefig(output / "revision_sensitivity.png", dpi=180)
@@ -332,4 +354,345 @@ def plot_freshness(summaries: list[dict], output: Path, stem: str = "freshness_c
     fig.tight_layout(rect=(0, 0.05, 1, 0.96))
     fig.savefig(output / f"{stem}.pdf")
     fig.savefig(output / f"{stem}.png", dpi=180)
+    plt.close(fig)
+
+
+# Final manuscript figures. Colors follow a validated categorical order
+# (blue, orange, violet, aqua) with a neutral gray for the unsigned control.
+F_BLUE, F_ORANGE, F_VIOLET, F_AQUA, F_GRAY = "#2a78d6", "#eb6834", "#4a3aa7", "#1baf7a", "#8a8f94"
+
+
+def _final_style() -> None:
+    plt.rcParams.update(
+        {
+            "font.size": 8,
+            "axes.titlesize": 8.5,
+            "axes.labelsize": 8,
+            "xtick.labelsize": 7.5,
+            "ytick.labelsize": 7.5,
+            "legend.fontsize": 7,
+            "pdf.fonttype": 42,
+            "axes.spines.top": False,
+            "axes.spines.right": False,
+            "axes.linewidth": 0.6,
+        }
+    )
+
+
+def plot_cpu_load(samples: dict, fits: dict, output: Path) -> None:
+    """samples[(kind, label)] -> [(queries/s, cores)]; fits share the keys."""
+    _final_style()
+    fig, axes = plt.subplots(1, 2, figsize=(7.0, 2.55))
+    styles = {"Ed25519, UDP": (F_BLUE, "o"), "ML-DSA-44, UDP then TCP": (F_ORANGE, "s")}
+    for ax, kind, title in (
+        (axes[0], "dns", "(a) CoreDNS process"),
+        (axes[1], "client", "(b) Load generator process"),
+    ):
+        for label, (color, marker) in styles.items():
+            points = samples[(kind, label)]
+            ax.scatter(
+                [p[0] for p in points],
+                [100 * p[1] for p in points],
+                s=11,
+                marker=marker,
+                facecolor="white",
+                edgecolor=color,
+                linewidth=0.8,
+                label=label,
+                zorder=3,
+            )
+            slope, intercept = fits[(kind, label)]
+            ax.plot(
+                [0, 480], [100 * intercept, 100 * (intercept + slope * 480)], color=color, lw=1.4
+            )
+            ax.text(
+                500,
+                100 * (intercept + slope * 480),
+                f"{slope * 1e6:.0f} µs/query",
+                color=INK,
+                fontsize=7,
+                va="center",
+            )
+        ax.set_xlim(0, 640)
+        ax.set_xticks([0, 100, 200, 300, 400, 500])
+        ax.set_ylim(bottom=0)
+        ax.set_xlabel("Offered queries/s in one-second interval")
+        ax.set_ylabel("CPU (% of one core)")
+        ax.set_title(title, loc="left", fontweight="bold")
+        ax.grid(axis="y", color="#d5d9dc", lw=0.5)
+        ax.set_axisbelow(True)
+    axes[0].legend(frameon=False, loc="upper left")
+    fig.tight_layout(w_pad=2.5)
+    fig.savefig(output / "cpu_load.pdf")
+    fig.savefig(output / "cpu_load.png", dpi=200)
+    plt.close(fig)
+
+
+def plot_latency(exchange: dict, phases: dict, output: Path) -> None:
+    """exchange[label] -> sorted ms; phases[(algorithm, phase)] -> [(dispatch, exchange)] per run."""
+    _final_style()
+    fig, axes = plt.subplots(1, 2, figsize=(7.0, 3.1), gridspec_kw={"width_ratios": [1.15, 1]})
+    ax = axes[0]
+    styles = {
+        "Unsigned, UDP": (F_GRAY, "-"),
+        "Falcon-512, UDP": (F_AQUA, "-"),
+        "ML-DSA-44, UDP then TCP": (F_ORANGE, "-"),
+        "ML-DSA-44, no signature cache": (F_ORANGE, "--"),
+        "ML-DSA-44, persistent TCP": (F_VIOLET, "-"),
+    }
+    for label, (color, line) in styles.items():
+        values = exchange[label]
+        above = 1 - (np.arange(len(values)) / len(values))
+        ax.step(values, above, where="post", color=color, ls=line, lw=1.3, label=label)
+    ax.set_yscale("log")
+    ax.set_ylim(5e-4, 1.05)
+    ax.set_xlim(0, 3.0)
+    ax.set_xlabel("Exchange time, first write to answer (ms)")
+    ax.set_ylabel("Fraction of queries above x")
+    ax.set_title("(a) Exchange time at 100 queries/s", loc="left", fontweight="bold")
+    ax.grid(color="#e3e6e8", lw=0.5)
+    ax.legend(frameon=False, loc="upper center", bbox_to_anchor=(0.5, -0.24), ncol=2, fontsize=6.5)
+    ax = axes[1]
+    groups = [("Ed25519", "low"), ("Ed25519", "high"), ("ML-DSA-44", "low"), ("ML-DSA-44", "high")]
+    width = 0.36
+    for j, (color, label) in enumerate(
+        ((F_GRAY, "Client delay before first write"), (F_ORANGE, "Exchange time"))
+    ):
+        for i, key in enumerate(groups):
+            values = [run[j] for run in phases[key]]
+            x = i + (j - 0.5) * width
+            ax.bar(
+                x,
+                statistics.median(values),
+                width=width * 0.92,
+                color=color,
+                edgecolor=INK,
+                lw=0.5,
+                label=label if i == 0 else None,
+            )
+            offsets = [(k - (len(values) - 1) / 2) * 0.07 for k in range(len(values))]
+            ax.scatter(
+                [x + o for o in offsets],
+                values,
+                s=9,
+                facecolor="white",
+                edgecolor=INK,
+                lw=0.6,
+                zorder=3,
+            )
+    ax.set_xticks(
+        range(4), ["Ed25519\n45 q/s", "Ed25519\n455 q/s", "ML-DSA-44\n45 q/s", "ML-DSA-44\n455 q/s"]
+    )
+    ax.set_ylabel("P99 (ms)")
+    ax.set_title("(b) Burst runs by phase", loc="left", fontweight="bold")
+    ax.grid(axis="y", color="#d5d9dc", lw=0.5)
+    ax.set_axisbelow(True)
+    ax.legend(frameon=False, loc="upper left", fontsize=6.5)
+    fig.tight_layout(w_pad=2.0)
+    fig.savefig(output / "latency.pdf")
+    fig.savefig(output / "latency.png", dpi=200)
+    plt.close(fig)
+
+
+def plot_final_capacity(rows: dict, derived: dict, sign_ms: dict, output: Path) -> None:
+    """(a) Measured against predicted CPU for SPHINCS+; (b) outcome shares with TTL."""
+    _final_style()
+    fig, axes = plt.subplots(1, 2, figsize=(7.0, 2.9), gridspec_kw={"width_ratios": [1, 1.25]})
+    ax = axes[0]
+    groups = (
+        (
+            "One pod, one core",
+            F_BLUE,
+            "o",
+            lambda c: "ttl" not in c and "pods" not in c and "2core" not in c,
+        ),
+        ("Response cache", F_AQUA, "s", lambda c: "ttl" in c),
+        ("One pod, two cores", F_ORANGE, "^", lambda c: "2core" in c),
+        ("Two pods", F_VIOLET, "D", lambda c: "pods" in c),
+    )
+    top = 135
+    for label, color, marker, test in groups:
+        xs, ys, cx = [], [], []
+        for cell, cell_rows in rows.items():
+            if not cell.startswith("sphincs") or not test(cell):
+                continue
+            per_sign = sign_ms[cell_rows[0]["algorithm"]]
+            for row, extra in zip(cell_rows, derived[cell], strict=True):
+                demand = (
+                    100 * extra["model_signs_per_pod"] * per_sign / 1000 / float(row["cpu_limit"])
+                )
+                if extra["answered_1s"] < 0.5:
+                    cx.append(demand)
+                elif extra["cpu_share"] is not None:
+                    xs.append(demand)
+                    ys.append(100 * extra["cpu_share"])
+        ax.scatter(
+            xs,
+            ys,
+            s=14,
+            marker=marker,
+            facecolor="white",
+            edgecolor=color,
+            lw=0.9,
+            label=label,
+            zorder=3,
+        )
+        ax.scatter(cx, [top - 8] * len(cx), s=22, marker="x", color=color, lw=1.1, zorder=3)
+    ax.plot([0, 130], [0, 130], color=INK, lw=0.7, ls="--")
+    ax.axhline(100, color="#bd4f24", lw=0.8)
+    ax.axvline(100, color="#bd4f24", lw=0.8, ls=":")
+    ax.text(3, top - 8, "collapsed", va="center", fontsize=7)
+    demands = [
+        100 * d["model_signs_per_pod"] * sign_ms[r["algorithm"]] / 1000 / float(r["cpu_limit"])
+        for cell, cell_rows in rows.items()
+        if cell.startswith("sphincs")
+        for r, d in zip(cell_rows, derived[cell], strict=True)
+    ]
+    ax.set_xlim(0, max(200, 1.1 * max(demands, default=0)))
+    ax.set_ylim(0, top)
+    ax.set_xlabel("Signing demand proxy (% of pod quota)")
+    ax.set_ylabel("Measured CPU (% of pod quota)")
+    ax.set_title("(a) SPHINCS+ signing capacity", loc="left", fontweight="bold")
+    ax.grid(color="#e3e6e8", lw=0.5)
+    ax.legend(frameon=False, loc="lower right", fontsize=6.5)
+
+    ax = axes[1]
+    order = [
+        ("sphincs128s-u8", "S 8/s\nTTL 0"),
+        ("sphincs128s-u8-ttl1", "S 8/s\nTTL 1"),
+        ("sphincs128s-u8-ttl5", "S 8/s\nTTL 5"),
+        ("sphincs128s-u12", "S 12/s\nTTL 0"),
+        ("sphincs128s-u12-ttl5", "S 12/s\nTTL 5"),
+        ("mldsa44-u8", "M 8/s\nTTL 0"),
+        ("mldsa44-u8-ttl1", "M 8/s\nTTL 1"),
+        ("mldsa44-u8-ttl5", "M 8/s\nTTL 5"),
+    ]
+    order = [(c, label) for c, label in order if c in derived]
+    fresh = [100 * statistics.median(d["fresh_1s"] for d in derived[c]) for c, _ in order]
+    stale = [100 * statistics.median(d["stale"] for d in derived[c]) for c, _ in order]
+    rest = [max(0.0, 100 - f - s) for f, s in zip(fresh, stale, strict=True)]
+    x = range(len(order))
+    ax.bar(x, fresh, color=F_BLUE, edgecolor="white", lw=0.8, label="Fresh within 1 s")
+    ax.bar(x, stale, bottom=fresh, color=F_ORANGE, edgecolor="white", lw=0.8, label="Stale")
+    ax.bar(
+        x,
+        rest,
+        bottom=[f + s for f, s in zip(fresh, stale, strict=True)],
+        color="#d5d9dc",
+        edgecolor="white",
+        lw=0.8,
+        label="Late, failed or unknown",
+    )
+    ax.set_xticks(list(x), [label for _, label in order], fontsize=6.5)
+    ax.set_ylim(0, 100)
+    ax.set_ylabel("Share of offered queries (%)")
+    ax.set_title("(b) Outcomes with response caching", loc="left", fontweight="bold")
+    ax.legend(frameon=False, loc="upper center", bbox_to_anchor=(0.5, -0.2), ncol=3, fontsize=6.5)
+    fig.tight_layout(w_pad=2.0)
+    fig.savefig(output / "final_capacity.pdf")
+    fig.savefig(output / "final_capacity.png", dpi=200)
+    plt.close(fig)
+
+
+def plot_final_delay(delay: dict, output: Path) -> None:
+    _final_style()
+    fig, ax = plt.subplots(figsize=(3.4, 2.6))
+    styles = {
+        "Falcon-512, UDP": (F_AQUA, "o"),
+        "ML-DSA-44, UDP then TCP": (F_ORANGE, "s"),
+        "ML-DSA-44, persistent TCP": (F_VIOLET, "D"),
+    }
+    for label, values in delay.items():
+        color, marker = styles.get(label, (INK, "o"))
+        ax.scatter(
+            values["delay_ms"],
+            values["median_ms"],
+            s=12,
+            marker=marker,
+            facecolor="white",
+            edgecolor=color,
+            lw=0.8,
+            zorder=3,
+        )
+        xs = np.array([0, 10.5])
+        ax.plot(
+            xs,
+            values["intercept_ms"] + values["slope_round_trips"] * xs,
+            color=color,
+            lw=1.2,
+            label=f"{label} (slope {values['slope_round_trips']:.1f})",
+        )
+    ax.set_xlabel("Added delay on the pod path (ms)")
+    ax.set_ylabel("Median exchange time (ms)")
+    ax.grid(color="#e3e6e8", lw=0.5)
+    ax.legend(frameon=False, loc="upper left", fontsize=6.3)
+    fig.tight_layout()
+    fig.savefig(output / "final_delay.pdf")
+    fig.savefig(output / "final_delay.png", dpi=200)
+    plt.close(fig)
+
+
+def plot_final_survey(survey: dict, output: Path) -> None:
+    """Answer size, CoreDNS CPU and exchange P99 for every algorithm, by answer size."""
+    _final_style()
+    items = sorted(survey.values(), key=lambda v: v["answer"] or 0)
+    labels = [v["algorithm"] for v in items]
+    colors = [
+        F_GRAY if v["sign_ms"] is None else F_ORANGE if (v["tcp_fraction"] or 0) > 0.5 else F_BLUE
+        for v in items
+    ]
+    x = np.arange(len(items))
+    fig, axes = plt.subplots(3, 1, figsize=(7.0, 5.6), sharex=True)
+    panels = (
+        (axes[0], [v["answer"] for v in items], None, "Answer (bytes)", "(a) Complete answer"),
+        (
+            axes[1],
+            [v["cpu_percent"] for v in items],
+            "cpu_runs",
+            "CPU (% of a core)",
+            "(b) CoreDNS CPU",
+        ),
+        (
+            axes[2],
+            [v["exchange_p99_ms"] for v in items],
+            "exchange_runs",
+            "P99 (ms)",
+            "(c) Exchange time P99",
+        ),
+    )
+    for ax, heights, runs, ylabel, title in panels:
+        ax.bar(x, [h or 0 for h in heights], color=colors, edgecolor="white", lw=0.8, width=0.7)
+        if runs:
+            for i, v in enumerate(items):
+                values = v[runs]
+                offsets = [(k - (len(values) - 1) / 2) * 0.08 for k in range(len(values))]
+                ax.scatter(
+                    [i + o for o in offsets],
+                    values,
+                    s=7,
+                    facecolor="white",
+                    edgecolor=INK,
+                    lw=0.5,
+                    zorder=3,
+                )
+        ax.set_ylabel(ylabel)
+        ax.set_title(title, loc="left", fontweight="bold")
+        ax.grid(axis="y", color="#e3e6e8", lw=0.5)
+        ax.set_axisbelow(True)
+    axes[0].axhline(1232, color="#bd4f24", ls="--", lw=0.8)
+    axes[0].text(0, 1300, "advertised UDP payload, 1232 B", fontsize=6.5, color="#bd4f24")
+    for ax in axes:
+        ax.set_yscale("log")
+    axes[2].set_xticks(x, labels, rotation=35, ha="right", fontsize=7)
+    handles = [
+        plt.Rectangle((0, 0), 1, 1, color=F_BLUE),
+        plt.Rectangle((0, 0), 1, 1, color=F_ORANGE),
+        plt.Rectangle((0, 0), 1, 1, color=F_GRAY),
+    ]
+    axes[1].legend(
+        handles, ["Answer over UDP", "UDP, then TCP", "Unsigned"], frameon=False, fontsize=6.5
+    )
+    fig.tight_layout()
+    fig.savefig(output / "final_survey.pdf")
+    fig.savefig(output / "final_survey.png", dpi=200)
     plt.close(fig)

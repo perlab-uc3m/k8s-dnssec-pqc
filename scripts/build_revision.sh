@@ -59,15 +59,21 @@ if git -C "$build_dir/dnssec_pqc_plugin" apply --check "$eviction_patch" 2>/dev/
 else
     git -C "$build_dir/dnssec_pqc_plugin" apply --reverse --check "$eviction_patch"
 fi
-if [ ! -f "$build_dir/local/lib/liboqs.so" ]; then
+# Every signature scheme of the submitted manuscript. Changing this list rebuilds liboqs.
+oqs_algorithms='SIG_ml_dsa_44;SIG_ml_dsa_65;SIG_ml_dsa_87;SIG_falcon_512;SIG_falcon_1024;SIG_sphincs_sha2_128s_simple;SIG_mayo_1;SIG_mayo_3;SIG_snova_SNOVA_24_5_4'
+if [ ! -f "$build_dir/local/lib/liboqs.so" ] || \
+    [ "$(cat "$build_dir/local/liboqs-algorithms.txt" 2>/dev/null)" != "$oqs_algorithms" ]; then
+    rm -rf "$build_dir/liboqs/out" "$build_dir/local"
     cmake -S "$build_dir/liboqs" -B "$build_dir/liboqs/out" -G Ninja \
         -DCMAKE_INSTALL_PREFIX="$build_dir/local" \
         -DBUILD_SHARED_LIBS=ON -DOQS_BUILD_ONLY_LIB=ON -DOQS_DIST_BUILD=ON \
         -DCMAKE_BUILD_TYPE=Release \
-        '-DOQS_MINIMAL_BUILD=SIG_ml_dsa_44;SIG_falcon_512;SIG_sphincs_sha2_128s_simple'
+        "-DOQS_MINIMAL_BUILD=$oqs_algorithms"
     cmake --build "$build_dir/liboqs/out" --parallel "${BUILD_JOBS:-2}"
     cmake --install "$build_dir/liboqs/out"
+    printf '%s' "$oqs_algorithms" > "$build_dir/local/liboqs-algorithms.txt"
 fi
+mkdir -p "$build_dir/local/lib/pkgconfig"
 cat > "$build_dir/local/lib/pkgconfig/liboqs-go.pc" <<'PKGCONFIG'
 Name: liboqs-go
 Description: C dependency for liboqs-go bindings
@@ -99,12 +105,15 @@ PLUGINS
         -require "github.com/qursa-uc3m/dnssec_pqc_plugin@v0.1.1"
     go run directives_generate.go
     CGO_ENABLED=1 go test github.com/qursa-uc3m/dnssec_pqc_plugin -run 'TestSigningFailureReturnsSERVFAIL|TestSignatureResponseOwnership|TestSignatureCacheEvictionCounter' -count=1
-    CGO_ENABLED=1 go build -o "$build_dir/coredns-pqc"
+    CGO_ENABLED=1 go build -a -o "$build_dir/coredns-pqc"
 )
 cd "$build_dir/dns"
 CGO_ENABLED=1 go test . -run TestPQCVerifyRepeatedAndTampered -count=1
 CGO_ENABLED=1 go build -o "$build_dir/verify-dns" "$repo_dir/tools/verify/main.go"
 CGO_ENABLED=1 go build -o "$build_dir/keygen-ed" "$repo_dir/tools/keygen_ed/main.go"
+CGO_ENABLED=1 go build -o "$build_dir/check-signers" "$repo_dir/tools/check_signers/main.go"
+"$build_dir/check-signers" "$build_dir/keygen-ed" > "$build_dir/signer-checks.txt"
+cat "$build_dir/signer-checks.txt"
 cd "$build_dir/dnssec_pqc_plugin/keygen"
 CGO_ENABLED=1 go build -o "$build_dir/keygen"
 mkdir -p "$build_dir/image"
@@ -129,7 +138,9 @@ from pathlib import Path
 root = Path(sys.argv[1])
 paths = sorted((root / "patches").glob("*.patch")) + sorted((root / "tools").rglob("*.go"))
 paths += [root / "scripts/build_revision.sh"]
-record = {"signature_ownership_fix": sys.argv[2] == "1",
+artifacts = ["coredns-pqc", "verify-dns", "keygen", "keygen-ed", "local/lib/liboqs.so.8", "go-build-info.txt", "signer-checks.txt"]
+record = {"artifacts": {"build/" + name: hashlib.sha256((root / "build" / name).read_bytes()).hexdigest() for name in artifacts},
+          "signature_ownership_fix": sys.argv[2] == "1",
           "image_id": (root / "build/image-id.txt").read_text().strip(),
           "inputs": {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest() for p in paths},
           "binary_sha256": hashlib.sha256((root / "build/coredns-pqc").read_bytes()).hexdigest()}

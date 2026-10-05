@@ -4,7 +4,7 @@ The revision benchmark runs on one Linux host. It builds a small CoreDNS image w
 
 ## Run it
 
-Prerequisites are Docker access, Go 1.26.0, CMake, Ninja, a C compiler, Python 3.14 with `venv`, `curl`, and enough free disk for the Kind node image and build cache. The tested setup is Linux x86-64. Kind is capped at 4 GiB; this is a limit, not proof that an 8 GiB host is sufficient. The measured host had 12 logical CPUs, an Intel Core i7-1365U processor, and 14.8 GiB RAM, with other applications running.
+Prerequisites are Docker access, Go 1.26.0, CMake, Ninja, a C compiler, Python 3.14 with `venv`, `curl`, and enough free disk for the Kind node image and build cache. The tested setup is Linux x86-64. Kind is capped at 4 GiB; this is a limit, not proof that an 8 GiB host is sufficient. The earlier campaigns used an Intel Core i7-1365U with 12 logical CPUs and 14.8 GiB RAM, with other applications running. The 36-run article campaign in `results/revision` used an Intel Core i5-12500T with 12 logical CPUs and 15.3 GiB RAM; its results are reported separately.
 
 ```bash
 ./bench doctor
@@ -26,6 +26,10 @@ After the runs, `./bench cleanup` deletes only the named revision Kind cluster a
 ```bash
 ./bench report results/revision/revision-study
 ```
+
+## Final revision campaign
+
+`./bench build` followed by `./bench final-revision` produces every result of the revised article from one build: the twelve reference configurations, every algorithm of the submitted manuscript, SPHINCS+ signing capacity, the response-cache TTL trade-off, replicas and cores, concurrent signing, rollouts, added delay and loss, and a 250-name namespace. The second command gates the main runs on a smoke check, resumes after interruption, and ends with tables, figures and a checksummed archive. Design, predictions, duration and deliberate omissions are in [docs/revision-final.md](docs/revision-final.md).
 
 ## What is measured
 
@@ -53,11 +57,13 @@ The companion controls are `config/revision-cache-ttl.yaml` (response cache, fre
 
 The saved TTL campaign uses the earlier signature implementation; it is not a clean TTL comparison. Run `./bench reproduce config/revision-cache-ttl-fixed.yaml` to collect a separate corrected campaign after building the default ownership patch. The corrected campaign has not yet been measured.
 
-The following command recreates the TeX table and PDF figures used by the revised manuscript from all complete raw runs. It requires three complete repetitions in every displayed reference and sensitivity cell.
+The revised manuscript `paper/comnet/main_review.tex` uses the separate 36-run campaign in `results/revision`. Regenerate its three data tables, two measured figures and the JSON file of quoted numbers under `paper/comnet/figures/final` with:
 
 ```bash
-./bench export-paper results/revision/revision-study --ttl results/revision/revision-cache-ttl --stress results/revision/revision-stress --output ../paper/comnet/figures
+./bench export-paper results/revision --output ../paper/comnet/figures/final
 ```
+
+The export also applies the signing model of `src/revision/analysis.py` to the logged update times, fits CoreDNS and client CPU against offered load in the burst runs, and splits latency at the client's first write. The earlier response-cache and quota controls remain historical artifacts and are not mixed into these outputs.
 
 A portable archive can be built without copying the temporary build tree or Docker images. The adjacent JSON manifest holds a SHA256 for the tar file and for each contained file. Archive creation and verification do not need the cluster.
 
@@ -66,7 +72,7 @@ A portable archive can be built without copying the temporary build tree or Dock
 ./bench verify-package release/revision-data-audited.tar release/revision-data-audited.tar.sha256.json
 ```
 
-Extract the archive in a separate directory and run `./bench report PATH/TO/revision-study` to rebuild the study tables and plots offline. The published archive location is intentionally left to the release process; the scripts do not download from an unverified or assumed URL. The result archive, its manifest, and the checked-in campaign YAMLs together identify the numerical evidence for the paper. The `release/`, `build/`, and `results/` directories are ignored by Git because raw campaign data and build objects are large.
+Extract the archive in a separate directory and run `./bench report PATH/TO/revision-study` to rebuild the study tables and plots offline. The published archive location is intentionally left to the release process; the scripts do not download from an unverified or assumed URL. That archive identifies the historical campaigns. The current 36-run campaign requires its own data archive and checksum manifest before public release. The `release/`, `build/`, and `results/` directories are ignored by Git because raw campaign data and build objects are large.
 
 ## Source checks
 
@@ -88,7 +94,7 @@ Builds fetch the declared commits directly and always invoke Go's incremental bu
 
 For the archived schema, analysis computes CPU and signing rates between the first periodic load scrape and the end scrape. Those samples share a clock origin; the original pre-load snapshot did not. All repaired pod intervals span at least 29.97 seconds. New collection uses absolute monotonic timestamps. Missing verification in a signed run is an error, and every response frame must match its query ID, attempt index, and recorded length. The archived update-visibility metric uses the final DNS transaction and excludes responses overlapping the next update request. The new answer-completion freshness metric explicitly retains those overlaps and is reported separately. Both distinguish older versions from unexpected addresses.
 
-The five manuscript figures cover the architecture, received DNS message sizes, signing work and CPU, traffic and TCP policy sensitivity, and cache/quota controls. The old response-size extrema and signing variability plots are not reused. The cache control is explicitly labeled as the measured interaction in the older build.
+The manuscript keeps three figures: the signing path, CPU against offered load, and exchange-time distributions with the burst phases. Received message sizes and signing times appear in its algorithm table. The historical cache/quota control is excluded because the TTL comparison is confounded and the host differs.
 
 Offline commands (`plan`, `report`, `export-paper`, `package`, and `verify-package`) skip Kubernetes tool downloads once Python dependencies are installed. Starting the default four-GiB Kind node requires five GiB of available host memory; running with an existing node requires one GiB of available headroom. These are conservative guards, not a measured minimum host specification.
 
