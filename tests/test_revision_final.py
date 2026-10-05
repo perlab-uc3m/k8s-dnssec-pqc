@@ -215,6 +215,33 @@ def test_smoke_check_flags_missing_netem_and_unverified_answers(tmp_path):
     assert not any("netem" in p for p in check_smoke(campaign))
 
 
+def test_smoke_check_requires_cpu_window_except_near_sphincs_capacity(tmp_path):
+    campaign = tmp_path / "smoke"
+    campaign.mkdir()
+    (campaign / "campaign.yaml").write_text(
+        "cells:\n  - id: mldsa44-q400\n  - id: sphincs128s-u8-2core\n"
+    )
+    for cell, algorithm in (
+        ("mldsa44-q400", "ML-DSA-44"),
+        ("sphincs128s-u8-2core", "SPHINCS+-SHA2-128s-simple"),
+    ):
+        run = campaign / "runs" / cell / "rep-01" / "attempt-01"
+        run.mkdir(parents=True)
+        (run / "COMPLETE").write_text("x")
+        row = {
+            "cell_id": cell,
+            "run": str(run),
+            "algorithm": algorithm,
+            "positive_unverified": 10,
+            "verified_positive": 10,
+            "cpu_metrics_valid": False,
+        }
+        (run / "summary.json").write_text(json.dumps(row))
+    problems = check_smoke(campaign)
+    assert any(p.startswith("mldsa44-q400: missing or invalid CPU window") for p in problems)
+    assert not any(p.startswith("sphincs128s-u8-2core") for p in problems)
+
+
 def test_apply_netem_enters_the_pod_namespace(monkeypatch):
     from src.revision import netem
 
