@@ -299,6 +299,8 @@ def export_final(campaign: Path, output: Path, reference: Path | None = None) ->
             "signs": med(cell, "signs_per_s"),
             "model_demand": _median(demand),
             "cpu_share": _median(d["cpu_share"] for d in extra),
+            "cpu_valid_runs": sum(r["cpu_cores"] is not None for r in rows),
+            "signing_valid_runs": sum(r["signs_per_s"] is not None for r in rows),
             "answered_1s": _median(d["answered_1s"] for d in extra),
             "fresh_1s": _median(d["fresh_1s"] for d in extra),
             "stale": _median(d["stale"] for d in extra),
@@ -317,7 +319,8 @@ def export_final(campaign: Path, output: Path, reference: Path | None = None) ->
                 _fmt(values["model_signs"], 2),
                 _fmt(values["signs"], 2),
                 _fmt(values["model_demand"], 0, 100),
-                _fmt(values["cpu_share"], 0, 100),
+                _fmt(values["cpu_share"], 0, 100)
+                + f" ({values['cpu_valid_runs']}/{values['runs']})",
                 _fmt(values["answered_1s"], 1, 100),
                 _fmt(values["model_stale"], 1, 100),
                 _fmt(values["stale"], 1, 100),
@@ -326,7 +329,9 @@ def export_final(campaign: Path, output: Path, reference: Path | None = None) ->
         )
     _table(
         output / "table_capacity.tex",
-        "Signing capacity and response caching at 100 queries/s. Medians over five runs. "
+        "Signing capacity and response caching at 100 queries/s. Medians over available runs; "
+        "CPU parentheses give the number with valid counter windows out of five. Missing "
+        "CPU and signing windows are excluded only from those counters, not outcomes. "
         "Model columns apply Eq.~(\\ref{eq:pmiss}) and its response-cache form to the realized "
         "update rate; demand multiplies the predicted signing rate per pod by the measured time "
         "per signature and divides by the pod quota. The time per signature is wall time, which "
@@ -416,7 +421,7 @@ def export_final(campaign: Path, output: Path, reference: Path | None = None) ->
     numbers["rollout"] = compare(ROLLOUT, "rollout")
     _table(
         output / "table_conditions.tex",
-        "Reference cells against four times the load, 1\\% reply loss with a 1~s UDP resend, "
+        "Reference cells against four times the load, 1\\% pod-egress packet loss with a 1~s UDP resend, "
         "and rollouts of eight names every 8~s. Medians of five runs; CPU in percent of one "
         "core, times in ms. Resent counts queries whose UDP query was sent more than once.",
         "tab:conditions",
@@ -496,6 +501,7 @@ def export_final(campaign: Path, output: Path, reference: Path | None = None) ->
         slope, intercept = np.polyfit([p[0] for p in points], [p[1] for p in points], 1)
         numbers["energy"] = {
             "package_power_slope_j_per_additional_sign": float(slope),
+            "interpretation": "Descriptive whole-package association; not energy attributable to a signature.",
             "fitted_package_intercept_w": float(intercept),
         }
 
